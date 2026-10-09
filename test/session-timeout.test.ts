@@ -38,6 +38,15 @@ describe("session join and receive deadlines", () => {
     frame(178, new ByteWriter().writeByte(0).writeInt(0).writeBoolean(false).writeInt(1).writeUTF("127.0.0.1:2").toBuffer());
     await vi.advanceTimersByTimeAsync(20); expect(s.state).toBe("disconnected");
   });
+  it("starts a new deadline after a successful session is explicitly restarted", async () => {
+    const { s, frame } = await fixture(); frame(115, teamPacket(false, [basicTeam(0, "host")]));
+    await s.start(); await vi.advanceTimersByTimeAsync(100); expect(s.state).toBe("disconnected");
+  });
+  it("bounds registration when an already-joined server redirects to a silent node", async () => {
+    const { s, frame } = await fixture(); frame(115, teamPacket(false, [basicTeam(0, "host")]));
+    frame(178, new ByteWriter().writeByte(0).writeInt(0).writeBoolean(false).writeInt(1).writeUTF("127.0.0.1:2").toBuffer());
+    await vi.advanceTimersByTimeAsync(100); expect(s.state).toBe("disconnected");
+  });
   it("keeps a quiet chat connection alive on incoming 108 without requiring 109", async () => {
     const { s, frame } = await fixture(); frame(115, teamPacket(false, [basicTeam(0, "host")]));
     for (let i = 0; i < 5; i++) { await vi.advanceTimersByTimeAsync(80); frame(108, heartbeat()); }
