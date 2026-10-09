@@ -83,6 +83,17 @@ function baseOpts(factory: ReturnType<typeof makeFactory>, over: Partial<MultiRo
 }
 
 describe("runMultiRooms", () => {
+  it("closes a session still waiting for registration when settle times out", async () => {
+    const factory = (target: ConnectTarget, opts: SessionOptions) => {
+      const s = new FakeSession(opts, "pending");
+      s.start = async () => { s.state = "awaiting-register"; };
+      return s;
+    };
+    const run = await runMultiRooms({ targets: ["127.0.0.1:1"], playerName: "timer", createSession: factory, settleTimeoutMs: 10, log: () => {} });
+    expect(run.handles[0]!.state()).toBe("disconnected");
+    expect(run.handles[0]!.snapshot().error).toBe("join timeout");
+    await run.close();
+  });
   it("三个目标同时进房，roomId 各自就位", async () => {
     const factory = makeFactory(["uuid-aaa", "uuid-bbb", "uuid-ccc"]);
     const run = await runMultiRooms(baseOpts(factory));
