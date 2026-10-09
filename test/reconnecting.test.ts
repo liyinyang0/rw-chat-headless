@@ -32,6 +32,7 @@ describe("optional reconnect ownership", () => {
   it("uses bounded exponential backoff with jitter", () => {
     expect([0, 1, 2, 3, 4, 5].map(i => reconnectDelay(i, 5000, 60000, () => 0.5))).toEqual([5000, 10000, 20000, 40000, 60000, 60000]);
     expect(reconnectDelay(0, 5000, 60000, () => 0)).toBe(4500);
+    expect(reconnectDelay(10, 5000, 60000, () => 1)).toBeLessThanOrEqual(60000);
   });
   it("re-resolves the original target and keeps identity/proxy after disconnect", async () => {
     const { s, sessions, resolver, optionsSeen } = fixture(); await s.start(); sessions[0]!.disconnect();
@@ -41,7 +42,7 @@ describe("optional reconnect ownership", () => {
     expect(optionsSeen[1]!.socksProxy).toEqual(optionsSeen[0]!.socksProxy);
     expect(s.sendChat("new connection")).toBe(true); expect(sessions[1]!.sent).toEqual(["new connection"]);
   });
-  it("does not schedule two retries when close and start rejection describe the same failure", async () => {
+  it("does not schedule two retries for repeated close events", async () => {
     const { s, sessions } = fixture(); const original = s.start(); await original;
     sessions[0]!.disconnect(); sessions[0]!.disconnect(); await vi.advanceTimersByTimeAsync(10);
     expect(sessions).toHaveLength(2);

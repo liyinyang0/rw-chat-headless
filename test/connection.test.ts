@@ -11,6 +11,13 @@ afterEach(async () => {
 });
 
 describe("RwConnection SOCKS5", () => {
+  it("rejects a pending TCP connection immediately when cancelled", async () => {
+    const conn = new RwConnection({ host: "127.0.0.1", port: 1 });
+    const result = conn.connect().then(() => "connected", error => String(error));
+    conn.close("cancelled before TCP connect");
+    expect(await Promise.race([result, new Promise(resolve => setTimeout(() => resolve("pending"), 100))]))
+      .toContain("cancelled before TCP connect");
+  });
   it("通过 SOCKS5 域名请求连接目标，并继续解码代理后的游戏帧", async () => {
     let requestedHost = "";
     let requestedPort = 0;
