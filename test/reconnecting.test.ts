@@ -15,7 +15,7 @@ class Fake extends EventEmitter {
 }
 const managed: ReconnectingSession[] = [];
 beforeEach(() => vi.useFakeTimers());
-afterEach(() => { for (const s of managed.splice(0)) s.disconnect(); vi.useRealTimers(); });
+afterEach(() => { for (const s of managed.splice(0)) s.disconnect(); vi.restoreAllMocks(); vi.useRealTimers(); });
 function fixture(options: Record<string, unknown> = {}, resolve?: (raw: string) => Promise<ConnectTarget>) {
   const sessions: Fake[] = []; const optionsSeen: SessionOptions[] = [];
   const resolver = vi.fn(async (raw: string, _password?: string | null): Promise<ConnectTarget> =>
@@ -29,6 +29,31 @@ function fixture(options: Record<string, unknown> = {}, resolve?: (raw: string) 
 }
 
 describe("optional reconnect ownership", () => {
+  it("exposes metadata from the current source and empty values before resolving", async () => {
+    const { s, sessions } = fixture();
+    expect([s.info, s.roomInfo, s.pingMs, s.slotCount, s.gameStartInfo, s.pendingInputRequest]).toEqual(Array(6).fill(null));
+    expect([s.roster, s.settings, s.phase, s.yourTeamId, s.serverEnded, s.reconnectCount]).toEqual([[], {}, "lobby", -1, false, 0]);
+    expect(s.sendChat("before join")).toBe(false);
+    await s.start();
+    expect(s.settings).toBe(sessions[0]!.settings); expect(s.roster).toBe(sessions[0]!.roster);
+    expect(s.phase).toBe("lobby"); expect(s.info).toBe(null); expect(s.roomInfo).toBe(null);
+    expect(s.pingMs).toBe(null); expect(s.slotCount).toBe(null); expect(s.yourTeamId).toBe(-1);
+    expect(s.gameStartInfo).toBe(null); expect(s.pendingInputRequest).toBe(null); expect(s.serverEnded).toBe(false);
+    s.disconnect(); expect(s.sendChat("after leave")).toBe(false);
+  });
+  it("schedules one retry when start rejects after emitting disconnected", async () => {
+    vi.spyOn(Fake.prototype, "start").mockImplementationOnce(async function(this: Fake) {
+      this.disconnect("dial refused"); throw new Error("dial refused");
+    });
+    const { s, sessions } = fixture(); await s.start(); await vi.advanceTimersByTimeAsync(10);
+    expect(sessions).toHaveLength(2); expect(s.reconnectCount).toBe(1);
+  });
+  it("preserves start rejection when reconnect is disabled", async () => {
+    vi.spyOn(Fake.prototype, "start").mockImplementationOnce(async function(this: Fake) {
+      this.disconnect("dial refused"); throw new Error("dial refused");
+    });
+    const { s } = fixture({ enabled: false }); await expect(s.start()).rejects.toThrow("dial refused");
+  });
   it("uses bounded exponential backoff with jitter", () => {
     expect([0, 1, 2, 3, 4, 5].map(i => reconnectDelay(i, 5000, 60000, () => 0.5))).toEqual([5000, 10000, 20000, 40000, 60000, 60000]);
     expect(reconnectDelay(0, 5000, 60000, () => 0)).toBe(4500);

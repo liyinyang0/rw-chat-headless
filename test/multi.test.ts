@@ -83,6 +83,13 @@ function baseOpts(factory: ReturnType<typeof makeFactory>, over: Partial<MultiRo
 }
 
 describe("runMultiRooms", () => {
+  it("does not display cached players as online after disconnect", async () => {
+    const factory = makeFactory(["cached"]);
+    const run = await runMultiRooms(baseOpts(factory, { targets: ["127.0.0.1:1"] }));
+    expect(run.handles[0]!.snapshot().currentPlayers).toBe(2);
+    await run.close();
+    expect(run.handles[0]!.snapshot().currentPlayers).toBe(0);
+  });
   it("closes a session still waiting for registration when settle times out", async () => {
     const factory = (target: ConnectTarget, opts: SessionOptions) => {
       const s = new FakeSession(opts, "pending");
