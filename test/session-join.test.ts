@@ -100,6 +100,31 @@ describe("vanilla room join over TCP", () => {
     await expect(echoed).resolves.toBe("vanilla-roundtrip");
     expect(received).toEqual(["vanilla-roundtrip"]);
   });
+
+  it("allows a fresh redirect budget after an explicit reconnect", async () => {
+    const endPort = await listen((frame, socket) => {
+      if (frame.type === 160) socket.write(encodeFrame(161, preregister()));
+      if (frame.type === 110) socket.write(encodeFrame(115, roster()));
+    });
+    let connections = 0;
+    const roomPort = await listen((frame, socket) => {
+      if (frame.type === 160) {
+        connections++;
+        socket.write(connections === 1 ? encodeFrame(161, preregister()) : encodeFrame(178, redirect(`127.0.0.1:${endPort}`)));
+      }
+      if (frame.type === 110) socket.write(encodeFrame(115, roster()));
+    });
+    const entryPort = await listen((frame, socket) => {
+      if (frame.type === 160) socket.write(encodeFrame(178, redirect(`127.0.0.1:${roomPort}`)));
+    });
+    const session = new Session({ host: "127.0.0.1", port: entryPort, label: "restart fixture" },
+      { playerName: "audit", clientUuid: "audit-seed", maxRedirects: 1 });
+    cleanup.push(() => session.disconnect());
+    let joined = waitState(session, "battleroom"); await session.start(); await joined;
+    session.disconnect();
+    joined = waitState(session, "battleroom"); await session.start(); await joined;
+    expect(connections).toBe(2);
+  });
 });
 
 describe("session registration and input lifecycle", () => {
@@ -152,5 +177,13 @@ describe("session registration and input lifecycle", () => {
     const other = fixture(); (other.session as any).redirects = 3;
     (other.session as any).handleFrame({ type: 178, payload: redirect("example.com") });
     expect(other.session.state).toBe("disconnected");
+  });
+
+  it("does not use incidental room text as an input classification", () => {
+    const { session, conn } = fixture();
+    const requests: unknown[] = []; session.on("inputRequest", (request) => requests.push(request));
+    (session as any).handleFrame({ type: 117, payload: new ByteWriter().writeByte(0).writeInt(1)
+      .writeUTF("Welcome to the chatroom. Enter the verification token").toBuffer() });
+    expect(conn.send).not.toHaveBeenCalled(); expect(requests).toHaveLength(1);
   });
 });
