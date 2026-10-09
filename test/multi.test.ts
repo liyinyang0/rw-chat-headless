@@ -94,6 +94,15 @@ describe("runMultiRooms", () => {
     expect(run.handles[0]!.snapshot().error).toBe("join timeout");
     await run.close();
   });
+  it("can opt into managed reconnect without replaying stale sessions", async () => {
+    const factory = makeFactory(["first", "second"]);
+    const run = await runMultiRooms(baseOpts(factory, { targets: ["127.0.0.1:1"], reconnect: { enabled: true, baseDelayMs: 1, maxDelayMs: 1 } } as Partial<MultiRoomOptions>));
+    const fixtures = fixtureOf(factory); const first = fixtures.sessions[0]!;
+    first.disconnect(); first.emit("disconnected", "socket closed");
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(fixtures.sessions).toHaveLength(2); expect(run.handles[0]!.roomId()).toBe("second");
+    await run.close();
+  });
   it("三个目标同时进房，roomId 各自就位", async () => {
     const factory = makeFactory(["uuid-aaa", "uuid-bbb", "uuid-ccc"]);
     const run = await runMultiRooms(baseOpts(factory));
