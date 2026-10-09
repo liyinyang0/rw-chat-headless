@@ -18,7 +18,8 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => { for (const s of managed.splice(0)) s.disconnect(); vi.useRealTimers(); });
 function fixture(options: Record<string, unknown> = {}, resolve?: (raw: string) => Promise<ConnectTarget>) {
   const sessions: Fake[] = []; const optionsSeen: SessionOptions[] = [];
-  const resolver = vi.fn(resolve ?? (async () => ({ host: "127.0.0.1", port: sessions.length + 1, label: "resolved" })));
+  const resolver = vi.fn(async (raw: string, _password?: string | null): Promise<ConnectTarget> =>
+    resolve ? resolve(raw) : { host: "127.0.0.1", port: sessions.length + 1, label: "resolved" });
   const s = new ReconnectingSession("r12345", { playerName: "bot", clientUuid: "stable", socksProxy: { host: "127.0.0.1", port: 99 } },
     { enabled: true, baseDelayMs: 10, maxDelayMs: 100, maxRetries: 2, ...options }, {
       resolve: resolver, random: () => 0.5,
