@@ -68,7 +68,7 @@ describe("hashes", () => {
   it("repeatHash 迭代次数", () => {
     expect(repeatHash("abc", 3)).not.toBe(repeatHash("abc", 2));
     expect(repeatHash("abc", 0)).toBe(
-      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD",
     );
   });
 });
@@ -96,8 +96,8 @@ describe("客户端身份派生", () => {
   it("同一房间身份种子在每个中继跳按当前 serverUuid 派生", () => {
     const firstHop = registeredClientId("relay-hop-a");
     const secondHop = registeredClientId("relay-hop-b");
-    expect(firstHop).toBe(sha256Hex("room-stable-seedrelay-hop-a"));
-    expect(secondHop).toBe(sha256Hex("room-stable-seedrelay-hop-b"));
+    expect(firstHop).toBe(sha256Hex("room-stable-seedrelay-hop-a").toUpperCase());
+    expect(secondHop).toBe(sha256Hex("room-stable-seedrelay-hop-b").toUpperCase());
     expect(secondHop).not.toBe(firstHop);
     expect(registeredClientId("relay-hop-a")).toBe(firstHop);
   });

@@ -13,7 +13,7 @@
 import { listRooms, roomConnectDescriptor, type RoomEntry } from "../masterserver/client.ts";
 import { parseConnectTarget, resolveTarget, TargetError, type ConnectTarget } from "../masterserver/target.ts";
 import { Session, type SessionEvents, type SessionOptions, type SessionState } from "./session.ts";
-import { type PreregisterInfo } from "../protocol/packets/common.ts";
+import { DEFAULT_UNITS_CHECKSUM, type PreregisterInfo } from "../protocol/packets/common.ts";
 import { persistentClientUuid } from "../protocol/identity.ts";
 import type { ServerInfoLite, TeamEntry } from "../protocol/packets/room.ts";
 import type { SocksProxyTarget } from "./connection.ts";
@@ -67,6 +67,8 @@ export interface MultiRoomOptions {
   language?: string;
   formatVersion?: 2 | 5;
   unitsChecksum?: number;
+  networkVersion?: number;
+  onInputRequest?: SessionOptions["onInputRequest"];
   relayRoomId?: string | null;
   /** 玩家名策略：suffix=第 2 个会话起加 -2/-3（默认，防同服务器重名）；same=全部同名。 */
   nameStrategy?: "suffix" | "same";
@@ -206,7 +208,9 @@ export async function runMultiRooms(opts: MultiRoomOptions): Promise<MultiRunRes
       password: opts.password ?? null,
       language: opts.language ?? "zh",
       formatVersion: opts.formatVersion ?? 5,
-      unitsChecksum: opts.unitsChecksum ?? 0,
+      unitsChecksum: opts.unitsChecksum ?? DEFAULT_UNITS_CHECKSUM,
+      networkVersion: opts.networkVersion,
+      onInputRequest: opts.onInputRequest,
       relayRoomId: opts.relayRoomId ?? null,
       debugFrames: opts.debugFrames ?? false,
       clientUuid: room.clientId,

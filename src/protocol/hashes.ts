@@ -1,8 +1,18 @@
 import { createHash } from "node:crypto";
 
-/** sha256 十六进制（小写），对齐 Utility.sha256Hex。 */
+/** 通用 SHA-256 小写十六进制；原版 RW 线路字段使用 rwSha256Hex。 */
 export function sha256Hex(str: string): string {
   return createHash("sha256").update(str, "utf8").digest("hex");
+}
+
+/** 原版 f.e(String)：固定 64 位、大写十六进制，不删除前导零。 */
+export function rwSha256Hex(str: string): string {
+  return sha256Hex(str).toUpperCase();
+}
+
+/** 原版 f.c(String)：大写、补零后截前 14 位。 */
+export function rwSha256ShortHash(str: string): string {
+  return rwSha256Hex(str).slice(0, 14);
 }
 
 /** sha256 十六进制截前 n 字符，对齐 Utility.truncateToLength(toHexString(sha256Bytes(s)), n)。 */
@@ -24,10 +34,10 @@ export function md5Hex(str: string): string {
   return createHash("md5").update(str, "utf8").digest("hex");
 }
 
-/** Utility.repeatHash(str, n)：sha256 后再迭代 n 次 sha256（共 n+1 次）。 */
+/** 原版 f.c(str, n)：每轮的大写哈希串参与下一轮，共 n+1 次。 */
 export function repeatHash(str: string, n: number): string {
-  let h = sha256Hex(str);
-  for (let i = 0; i < n; i++) h = sha256Hex(h);
+  let h = rwSha256Hex(str);
+  for (let i = 0; i < n; i++) h = rwSha256Hex(h);
   return h;
 }
 
@@ -37,6 +47,5 @@ export function repeatHash(str: string, n: number): string {
  * %064X 补零格式在哈希首半字节为 0 时不同——以服务器侧生成为准）。
  */
 export function rwhpsPowHash14(str: string): string {
-  const hex = createHash("sha256").update(str, "utf8").digest("hex");
-  return hex.replace(/^0+/, "").toUpperCase().slice(0, 14);
+  return rwSha256Hex(str).replace(/^0+/, "").slice(0, 14);
 }

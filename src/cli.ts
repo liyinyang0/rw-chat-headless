@@ -15,6 +15,7 @@ import { createInterface } from "node:readline";
 import { listRooms, roomConnectDescriptor } from "./masterserver/client.ts";
 import { parseConnectTarget, resolveTarget, TargetError } from "./masterserver/target.ts";
 import { Session } from "./client/session.ts";
+import { DEFAULT_UNITS_CHECKSUM } from "./protocol/packets/common.ts";
 import { runMultiRooms, type MultiRunResult } from "./client/multi.ts";
 import { parseSocksProxy } from "./client/connection.ts";
 
@@ -74,8 +75,7 @@ async function runSession(target: string): Promise<void> {
     language: env.LANGUAGE || "zh",
     // v176 系（Rukkit/RW-HPS/RWX）要求完整注册；i2=2 会被静默丢弃
     formatVersion: (env.REGISTER_FORMAT === "2" ? 2 : 5) as 2 | 5,
-    // 176 核心单位校验和（从真实 RWX 客户端抓取；其他版本用 capture-server 提取）
-    unitsChecksum: Number(env.UNITS_CHECKSUM || 678359601) | 0,
+    unitsChecksum: Number(env.UNITS_CHECKSUM || DEFAULT_UNITS_CHECKSUM) | 0,
     relayRoomId: env.RELAY_ROOM_ID || null,
     debugFrames: env.DEBUG === "1" || env.DEBUG === "true",
     clientUuid: env.CLIENT_UUID || undefined,
@@ -96,21 +96,34 @@ async function runSession(target: string): Promise<void> {
 
   session.on("kicked", (reason) => info(`被踢出: ${reason}`));
   session.on("disconnected", (reason) => info(`连接断开: ${reason}`));
-
-  await session.start();
+  session.on("inputRequest", (request) => {
+    info(`服务器请求输入: ${request.prompt}`);
+    info("下一行输入将作为应答；/quit 退出。");
+  });
 
   // stdin 聊天
   const rl = createInterface({ input: process.stdin });
   rl.on("line", (line) => {
     const text = line.trim();
-    if (!text) return;
     if (text === "/quit" || text === "/exit") {
       session.disconnect("bye");
       setTimeout(() => process.exit(0), 300);
       return;
     }
+    if (session.pendingInputRequest) {
+      session.pendingInputRequest.respond(line);
+      return;
+    }
+    if (!text) return;
     session.sendChat(text);
   });
+
+  try {
+    await session.start();
+  } catch (error) {
+    rl.close();
+    throw error;
+  }
   rl.on("close", () => {
     session.disconnect("stdin closed");
     setTimeout(() => process.exit(0), 300);
@@ -143,7 +156,7 @@ async function runMultiSession(targetArgs: string[]): Promise<void> {
     password: env.PASSWORD || null,
     language: env.LANGUAGE || "zh",
     formatVersion: (env.REGISTER_FORMAT === "2" ? 2 : 5) as 2 | 5,
-    unitsChecksum: Number(env.UNITS_CHECKSUM || 678359601) | 0,
+    unitsChecksum: Number(env.UNITS_CHECKSUM || DEFAULT_UNITS_CHECKSUM) | 0,
     relayRoomId: env.RELAY_ROOM_ID || null,
     nameStrategy: env.MULTI_NAME === "same" ? "same" : "suffix",
     clientIdBase: env.CLIENT_UUID || undefined,

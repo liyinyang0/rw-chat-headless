@@ -1,4 +1,4 @@
-import { formatServerCode, integrityString } from "../protocol/integrity.ts";
+import { formatServerCode } from "../protocol/integrity.ts";
 import { repeatHash, sha256ShortHash } from "../protocol/hashes.ts";
 
 /** 主服务器接口（与官方客户端一致）。 */
@@ -65,9 +65,27 @@ function parseListLine(line: string): RoomEntry | null {
   };
 }
 
-async function fetchFirstValid(path: string, init?: RequestInit, timeoutMs = 8000): Promise<string> {
-  const attempts = MASTER_SERVER_URLS.map(async (base) => {
-    const ctrl = new AbortController();
+class MasterServerError extends Error {}
+
+function responseLines(text: string): string[] {
+  const lines = text.split(/\r?\n/);
+  const header = lines[0] ?? "";
+  if (!header.startsWith("CORRODINGGAMES")) throw new Error("master server bad header");
+  if (header.includes("[FAILED]")) {
+    const error = lines[1] ?? "";
+    if (error.startsWith("ERROR_WRONG_PASSWORD")) throw new MasterServerError("Wrong password");
+    if (error.startsWith("ERROR_MISSING_PASSWORD")) throw new MasterServerError("Missing password");
+    if (error.startsWith("ERROR_WRONG_C")) throw new MasterServerError("Wrong server code");
+    if (error.startsWith("ERROR_MISSING")) throw new MasterServerError("Request missing required fields");
+    throw new MasterServerError(`master server failed: ${error.slice(0, 80)}`);
+  }
+  return lines;
+}
+
+async function fetchFirstValid<T>(path: string, parse: (text: string) => T, init?: RequestInit, timeoutMs = 8000): Promise<T> {
+  const controllers = MASTER_SERVER_URLS.map(() => new AbortController());
+  const attempts = MASTER_SERVER_URLS.map(async (base, index) => {
+    const ctrl = controllers[index]!;
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const res = await fetch(base + path, {
@@ -80,30 +98,41 @@ async function fetchFirstValid(path: string, init?: RequestInit, timeoutMs = 800
         },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.text();
+      // 每个节点都必须完成协议校验才能赢得竞争。
+      return parse(await res.text());
     } finally {
       clearTimeout(timer);
     }
   });
-  return await Promise.any(attempts);
+  try {
+    return await Promise.any(attempts);
+  } catch (error) {
+    if (error instanceof AggregateError) {
+      throw error.errors.find((item) => item instanceof MasterServerError)
+        ?? error.errors.find((item) => item instanceof Error)
+        ?? new Error("No valid master-server response");
+    }
+    throw error;
+  } finally {
+    for (const controller of controllers) controller.abort();
+  }
 }
 
 /** 拉取公开房间列表。 */
 export async function listRooms(): Promise<RoomEntry[]> {
-  const text = await fetchFirstValid(
+  return await fetchFirstValid(
     `?action=list&game_version=176&game_version_beta=false`,
+    (text) => {
+      const lines = responseLines(text);
+      const rooms: RoomEntry[] = [];
+      for (const line of lines.slice(1)) {
+        if (!line.trim()) continue;
+        const entry = parseListLine(line);
+        if (entry) rooms.push(entry);
+      }
+      return rooms;
+    },
   );
-  const lines = text.split(/\r?\n/);
-  if (!lines[0]?.includes("CORRODINGGAMES")) {
-    throw new Error(`master server bad header: ${lines[0]?.slice(0, 40)}`);
-  }
-  const rooms: RoomEntry[] = [];
-  for (const line of lines.slice(1)) {
-    if (!line.trim()) continue;
-    const entry = parseListLine(line);
-    if (entry) rooms.push(entry);
-  }
-  return rooms;
 }
 
 export interface ResolvedGameServer {
@@ -122,34 +151,25 @@ export async function getGameServer(
     game_id: gameId,
     c: formatServerCode(serverCode),
   });
-  if (password) params.set("p_hash", repeatHash(gameId + password, 3));
-  const text = await fetchFirstValid(``, {
+  if (password != null) params.set("p_hash", repeatHash(gameId + password, 3));
+  return await fetchFirstValid(``, (text) => {
+    const lines = responseLines(text);
+    const check = lines[2] ?? "";
+    if (!check.toLowerCase().includes(sha256ShortHash("game_" + formatServerCode(serverCode)).toLowerCase())) {
+      throw new Error("master server integrity line mismatch");
+    }
+    const csv = (lines[4] ?? "").split(",", -1);
+    if (csv.length <= 18) throw new Error(`master server csv too short: ${csv.length}`);
+    const host = csv[3] ?? "";
+    const port = Number(csv[5]);
+    if (!host || /[\s\u0000-\u001f\u007f]/.test(host) || !/^\d+$/.test(csv[5] ?? "")
+      || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error("master server returned invalid address or port");
+    return { host, port };
+  }, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: params.toString(),
   });
-  const lines = text.split(/\r?\n/);
-  const header = lines[0] ?? "";
-  if (!header.includes("CORRODINGGAMES")) throw new Error(`master server bad header: ${header.slice(0, 40)}`);
-  if (header.includes("[FAILED]")) {
-    const err = lines[1] ?? "";
-    if (err.startsWith("ERROR_WRONG_PASSWORD")) throw new Error("Wrong password");
-    if (err.startsWith("ERROR_MISSING_PASSWORD")) throw new Error("Missing password");
-    if (err.startsWith("ERROR_WRONG_C")) throw new Error("Wrong server code");
-    if (err.startsWith("ERROR_MISSING")) throw new Error("Request missing required fields");
-    throw new Error(`master server failed: ${err.slice(0, 80)}`);
-  }
-  // 行3 校验 sha256ShortHash("game_" + code)
-  const check = lines[2] ?? "";
-  if (!check.toLowerCase().includes(sha256ShortHash("game_" + formatServerCode(serverCode)).toLowerCase())) {
-    throw new Error("master server integrity line mismatch");
-  }
-  const csv = (lines[4] ?? "").split(",", -1);
-  if (csv.length <= 18) throw new Error(`master server csv too short: ${csv.length}`);
-  const host = csv[3] ?? "";
-  const port = Number(csv[5]);
-  if (!host || !Number.isFinite(port)) throw new Error("master server returned no address");
-  return { host, port };
 }
 
 /** 列表房间 → 连接描述符（对齐 ServerInfo.getConnectDescriptor）。 */

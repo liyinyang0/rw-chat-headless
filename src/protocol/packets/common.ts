@@ -1,6 +1,6 @@
 import { ByteReader, ByteWriter } from "../primitives.ts";
 import { extraCheckString, integrityString } from "../integrity.ts";
-import { sha256Hex } from "../hashes.ts";
+import { rwSha256Hex } from "../hashes.ts";
 import { persistentClientUuid } from "../identity.ts";
 
 /** 帧类型常量（对齐 RW PacketType）。 */
@@ -22,7 +22,7 @@ export const PacketType = {
   PREREGISTER_REQUEST: 160,
   PREREGISTER_INFO: 161,
   REGISTER_PLAYER: 110,
-  /** RW-HPS 中继跳转：载荷含 "[TCP]host:port" 形式的真实服务器地址。 */
+  /** 原版 PACKET_RECONNECT_TO：结构化连接字符串列表。 */
   RELAY_REDIRECT: 178,
 } as const;
 
@@ -31,8 +31,9 @@ export const MAGIC = "com.corrodinggames.rts";
 /** 平台码：1=安卓，2=PC，3=iOS（NetworkEngine.f）。 */
 export const PLATFORM_PC = 2;
 
-/** 本客户端报告的版本码（RW 1.15 系 = 176；仅作展示用，实际以 161 回显为准）。 */
+/** 本客户端实现的协议/构建版本（RW 1.15 系 = 176）。 */
 export const VERSION_CODE = 176;
+export const DEFAULT_UNITS_CHECKSUM = 678359601;
 
 export interface HelloOptions {
   playerName: string;
@@ -40,6 +41,7 @@ export interface HelloOptions {
   /** 中继/转发场景的查询串（如房间代码 rkzxxxx）。 */
   queryString?: string | null;
   platform?: number;
+  networkVersion?: number;
 }
 
 /** 160 PREREGISTER_REQUEST（客户端→服务器，连接后第一包）。 */
@@ -47,7 +49,7 @@ export function buildHello(opts: HelloOptions): Buffer {
   const w = new ByteWriter();
   w.writeUTF(MAGIC);
   w.writeInt(4); // requestVersion
-  w.writeInt(VERSION_CODE); // networkVersion（服务器读后丢弃）
+  w.writeInt(opts.networkVersion ?? VERSION_CODE);
   w.writeInt(opts.platform ?? PLATFORM_PC);
   w.writeStringNullable(opts.queryString ?? null);
   w.writeUTF(opts.playerName);
@@ -57,7 +59,7 @@ export function buildHello(opts: HelloOptions): Buffer {
 }
 
 export interface PreregisterInfo {
-  /** 服务器网络版本（注册时必须回显）。 */
+  /** 服务器网络版本，用于解析其后续流；不是客户端支持的版本。 */
   networkVersion: number;
   serverUuid: string;
   /** 完整性挑战种子（i2>=5 模式需要）。 */
@@ -91,7 +93,7 @@ export function parsePreregisterInfo(payload: Buffer): PreregisterInfo {
 
 export interface RegisterOptions {
   playerName: string;
-  /** 回显 161 的网络版本（服务器要求与自身一致）。 */
+  /** 客户端支持的网络版本；不得通过回显 161 来假装跨版本兼容。 */
   networkVersion: number;
   /** 房间密码（sha256 后发送）。 */
   password?: string | null;
@@ -119,10 +121,10 @@ export function buildRegister(opts: RegisterOptions): Buffer {
   w.writeInt(opts.networkVersion);
   w.writeInt(VERSION_CODE);
   w.writeUTF(opts.playerName);
-  w.writeStringNullable(opts.password ? sha256Hex(opts.password) : null);
+  w.writeStringNullable(opts.password != null ? rwSha256Hex(opts.password) : null);
   if (format >= 1) w.writeUTF("com.corrodinggames.rts.java"); // connectionLabel：PC 桌面客户端包名（.server 会被中继误判为节点级联）
   if (format >= 2) w.writeUTF(opts.clientId ?? deriveClientId(opts.serverUuid, opts.clientUuid));
-  if (format >= 3) w.writeInt(opts.unitsChecksum ?? 0);
+  if (format >= 3) w.writeInt(opts.unitsChecksum ?? DEFAULT_UNITS_CHECKSUM);
   if (format >= 4) w.writeUTF(integrityString(opts.sessionRandomId ?? 0));
   if (format >= 5) w.writeUTF(extraCheckString(opts.integritySalt ?? 0));
   return w.toBuffer();
@@ -131,7 +133,7 @@ export function buildRegister(opts: RegisterOptions): Buffer {
 /** 模拟真实客户端：每一跳都按当前 serverUuid 派生最终 ID。 */
 function deriveClientId(serverUuid?: string | null, clientUuid?: string): string {
   const stableUuid = clientUuid || process.env.CLIENT_UUID || persistentClientUuid();
-  return sha256Hex(stableUuid + (serverUuid ?? ""));
+  return rwSha256Hex(stableUuid + (serverUuid ?? ""));
 }
 
 /** 140 CHAT（客户端→服务器）。 */

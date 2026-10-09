@@ -33,7 +33,7 @@ export function parseConnectTarget(inputRaw: string): DirectTarget | RelayTarget
     const code = Number(parts[2]);
     const needsPassword = parts[3] === "true";
     const port = Number(parts[4]);
-    if (!gameId || !Number.isFinite(code) || !Number.isFinite(port)) {
+    if (!gameId || !Number.isInteger(code) || !Number.isInteger(port) || port < 1 || port > 65535) {
       throw new TargetError(`bad get| descriptor fields: ${s}`);
     }
     return { kind: "get", gameId, serverCode: code, needsPassword, port, label: s };
@@ -78,10 +78,10 @@ export function parseConnectTarget(inputRaw: string): DirectTarget | RelayTarget
     host = colonParts.slice(0, -1).join(":");
     const portStr = colonParts[colonParts.length - 1]!;
     const p = Number(portStr);
-    if (!Number.isFinite(p)) throw new TargetError(`bad port: ${portStr}`);
+    if (!/^\d+$/.test(portStr!) || !Number.isInteger(p) || p < 1 || p > 65535) throw new TargetError(`bad port: ${portStr}`);
     port = p;
   }
-  if (host.length === 0) throw new TargetError(`bad host in: ${inputRaw}`);
+  if (host.length === 0 || /[\s\u0000-\u001f\u007f]/.test(host)) throw new TargetError("bad host in target");
   return { kind: "direct", host, port, queryString, label: `${host}:${port}${queryString ? "/" + queryString : ""}` };
 }
 
@@ -123,6 +123,7 @@ export async function resolveTarget(
       label: target.label,
     };
   }
+  if (target.needsPassword && password == null) throw new TargetError("Password required for this server");
   const server = await getGameServer(target.gameId, target.serverCode, password ?? null);
   return {
     host: server.host,

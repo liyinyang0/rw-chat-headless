@@ -1,33 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { isRoomUnavailablePrompt, parseRelayRedirect, Session } from "../src/client/session.ts";
+import { ByteWriter } from "../src/protocol/primitives.ts";
 
 describe("parseRelayRedirect (178 跳转地址解析)", () => {
-  it("parses host/room:port — CNKD 系中继把第二跳房间码内嵌在路径里", () => {
-    expect(parseRelayRedirect("[TCP]z.relay.cnkd.fun/kz198:5123")).toEqual({
-      host: "z.relay.cnkd.fun",
-      port: 5123,
-      room: "kz198",
+  it.each(["[TCP]z.relay.cnkd.fun/kz198:5123", "[TCP]1.2.3.4:5124", "[TCP]example.com/abc123", "example.com"])
+    ("preserves the complete connection string %s", (address) => {
+      const payload = new ByteWriter().writeByte(0).writeInt(0).writeBoolean(false).writeInt(1).writeUTF(address).toBuffer();
+      expect(parseRelayRedirect(payload).addresses).toEqual([address]);
     });
-  });
-
-  it("parses plain host:port", () => {
-    expect(parseRelayRedirect("[TCP]1.2.3.4:5124")).toEqual({ host: "1.2.3.4", port: 5124, room: null });
-  });
-
-  it("defaults port to 5123 when the path carries no port", () => {
-    expect(parseRelayRedirect("[TCP]example.com/abc123")).toEqual({
-      host: "example.com",
-      port: 5123,
-      room: "abc123",
-    });
-  });
-
-  it("falls back to bare host:port match without the [TCP] prefix", () => {
-    expect(parseRelayRedirect("goto 5.6.7.8:9000 now")).toEqual({ host: "5.6.7.8", port: 9000, room: null });
-  });
-
-  it("returns null when no address is present", () => {
-    expect(parseRelayRedirect("no address here")).toBeNull();
+  it("does not scan raw text as a binary packet", () => {
+    expect(() => parseRelayRedirect(Buffer.from("goto 5.6.7.8:9000 now"))).toThrow();
   });
 });
 

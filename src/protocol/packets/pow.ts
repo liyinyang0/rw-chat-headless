@@ -1,6 +1,6 @@
 import { ByteReader, ByteWriter } from "../primitives.ts";
 import { integrityString } from "../integrity.ts";
-import { rwhpsPowHash14 } from "../hashes.ts";
+import { rwSha256ShortHash } from "../hashes.ts";
 
 /**
  * 151 RELAY_POW：服务器下发的计算挑战（原版 RW 服务器/中继使用；RWX 自身不发送）。
@@ -21,43 +21,54 @@ export interface PowChallenge {
   repeatCount?: number;
 }
 
-export function parsePowChallenge(payload: Buffer): PowChallenge {
+/** 原版 aq.i/aq.j：包未携带字段时沿用先前值。每个会话独立保存。 */
+export interface PowState {
+  minClientVersion: number;
+  minServerVersion: number;
+}
+
+export function createPowState(): PowState {
+  return { minClientVersion: 55, minServerVersion: 66 };
+}
+
+export function parsePowChallenge(payload: Buffer, state: PowState = createPowState()): PowChallenge {
   const r = new ByteReader(payload);
   const id = r.readInt();
   const type = r.readInt();
-  const c: PowChallenge = { id, type, minClientVersion: null, minServerVersion: null };
+  const c: PowChallenge = { id, type, ...state };
   if (r.readBoolean()) c.minClientVersion = r.readInt();
   if (r.readBoolean()) c.minServerVersion = r.readInt();
   if (type === 5 || type === 6) {
     c.targetHash = r.readUTF();
     c.baseString = r.readUTF();
     c.maxIter = r.readInt();
-    if (type === 6 && c.minClientVersion !== null) {
+    if (type === 6) {
       c.baseString = (c.baseString ?? "") + c.minClientVersion;
     }
   } else if (type === 7) {
     c.repeatUnit = r.readUTF();
     c.repeatCount = r.readInt();
   }
+  // 只有完整解析成功才更新保存值，坏包不能污染后续挑战。
+  state.minClientVersion = c.minClientVersion!;
+  state.minServerVersion = c.minServerVersion!;
   return c;
 }
 
-/** 求解挑战。返回应答串（"max" 表示放弃）。哈希格式按 RW-HPS 侧生成逻辑。 */
+/** 原版客户端求解规则（"max" 表示超过工作量上限）。 */
 export function solvePowChallenge(c: PowChallenge): string {
-  const minClient = c.minClientVersion ?? 0;
-  const minServer = c.minServerVersion ?? 0;
+  const minClient = c.minClientVersion ?? 55;
+  const minServer = c.minServerVersion ?? 66;
   switch (c.type) {
     case 0:
       return String(minClient);
     case 1:
       return String(minServer);
     case 2:
-      // RW-HPS 从不下发 type 2（构造时映射为 5），且其校验恒真；给 g() 兜底
       return integrityString(minClient);
     case 3:
     case 4:
-      // RW-HPS: BigInteger(sha256(init1 + "|" + init2)).toString(16).upper().cut(14)
-      return rwhpsPowHash14(`${minClient}|${minServer}`);
+      return rwSha256ShortHash(`${minClient}|${minServer}`);
     case 5:
     case 6: {
       const target = c.targetHash ?? "";
@@ -65,7 +76,7 @@ export function solvePowChallenge(c: PowChallenge): string {
       const maxIter = c.maxIter ?? 0;
       if (maxIter > 10_000_000) return "max";
       for (let i = 0; i <= maxIter; i++) {
-        if (rwhpsPowHash14(base + i) === target) return String(i);
+        if (rwSha256ShortHash(base + i) === target) return String(i);
       }
       return "-1";
     }
@@ -73,10 +84,10 @@ export function solvePowChallenge(c: PowChallenge): string {
       const unit = c.repeatUnit ?? "";
       const count = c.repeatCount ?? 0;
       if (count > 10_000) return "max";
-      return unit.repeat(count);
+      return unit.repeat(Math.max(0, count));
     }
     default:
-      return "-1";
+      return "";
   }
 }
 

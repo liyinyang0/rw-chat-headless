@@ -1,8 +1,10 @@
 import { EventEmitter } from "node:events";
 import { RwConnection, type SocksProxyTarget } from "./connection.ts";
-import type { ConnectTarget } from "../masterserver/target.ts";
+import { parseConnectTarget, resolveTarget, type ConnectTarget } from "../masterserver/target.ts";
+import { ByteReader, ProtocolError } from "../protocol/primitives.ts";
 import {
   PacketType,
+  VERSION_CODE,
   buildChat,
   buildClientStatus,
   buildDisconnect,
@@ -21,7 +23,7 @@ import {
   type ChatMessageReceived,
   type PreregisterInfo,
 } from "../protocol/packets/common.ts";
-import { parsePowChallenge, buildPowResponse, solvePowChallenge } from "../protocol/packets/pow.ts";
+import { parsePowChallenge, buildPowResponse, solvePowChallenge, createPowState } from "../protocol/packets/pow.ts";
 import { parseServerInfo, parseTeamList, type RoomSettingsLite, type ServerInfoLite, type TeamEntry } from "../protocol/packets/room.ts";
 import { integrityString } from "../protocol/integrity.ts";
 
@@ -46,6 +48,16 @@ export interface SessionEvents {
   kicked: string;
   disconnected: string;
   log: string;
+  inputRequest: SessionInputRequest;
+}
+
+export interface SessionInputRequest {
+  kind: "prompt" | "password";
+  requestId: number | null;
+  prompt: string;
+  target: Readonly<ConnectTarget>;
+  /** null 取消连接；应答只对当前连接和当前请求有效。 */
+  respond(answer: string | null): void;
 }
 
 export interface SessionOptions {
@@ -56,6 +68,8 @@ export interface SessionOptions {
   formatVersion?: 2 | 5;
   /** 核心单位校验和（真 RWX 服务器会校验；Rukkit/RW-HPS 不校验）。 */
   unitsChecksum?: number;
+  /** 自身支持的网络版本，默认 176；修改时需要匹配的单位校验和/协议实现。 */
+  networkVersion?: number;
   /** 官方中继的房间 id（117 提问时的应答；null 则回当前 query）。 */
   relayRoomId?: string | null;
   /** 固定客户端 UUID 种子；每次中继跳转后结合当前 serverUuid 派生最终 ID。 */
@@ -67,6 +81,10 @@ export interface SessionOptions {
   heartbeatMs?: number;
   /** 打印每个收到的帧类型（调试用）。 */
   debugFrames?: boolean;
+  maxRedirects?: number;
+  inputTimeoutMs?: number;
+  /** 未返回字符串时保留请求，调用方可稍后通过 respond 应答。 */
+  onInputRequest?: (request: SessionInputRequest) => string | null | undefined | Promise<string | null | undefined>;
 }
 
 declare interface Session {
@@ -79,39 +97,26 @@ export function isRoomUnavailablePrompt(prompt: string): boolean {
   return /(?:房间\s*ID.*(?:不存在|已关闭)|找不到这个服务器|房间号.*不存在|game\s+not\s+found)/i.test(prompt);
 }
 
-export interface RelayRedirectAddress {
-  host: string;
-  port: number;
-  /** 地址路径内嵌的第二跳房间码（CNKD 系中继形态 host/room:port）；无则为 null。 */
-  room: string | null;
+export interface RelayRedirect {
+  formatVersion: number;
+  reconnectId: number;
+  showFailure: boolean;
+  addresses: string[];
 }
 
 /**
- * 解析 178 跳转载荷中的目标地址。载荷形态：
- *   "[TCP]host:port"      — 官方 relay / 普通跳转
- *   "[TCP]host/room:port" — CNKD 系中继：第二跳房间码内嵌在路径里，
- *                            117 应答须改用该房间码（入口的 r 前缀码到节点已失效）。
- * 匹配不到地址返回 null。
+ * 原版 178：byte + int + boolean + int count + Java UTF 连接字符串列表。
+ * showFailure 控制原版的失败提示，不是 TCP/UDP 标志；地址交回通用解析器。
  */
-export function parseRelayRedirect(text: string): RelayRedirectAddress | null {
-  const m = text.match(/\[TCP\]([^\s\x00]+)/) ?? text.match(/([0-9a-zA-Z.\-]+:\d+)/);
-  if (!m) return null;
-  const addr = m[1]!;
-  const slashIdx = addr.indexOf("/");
-  const hostPart = slashIdx >= 0 ? addr.slice(0, slashIdx) : addr;
-  const roomPart = slashIdx >= 0 ? addr.slice(slashIdx + 1) : null;
-  const [hostRaw, portFromHost] = hostPart.split(":");
-  const host = hostRaw!;
-  let port = Number(portFromHost);
-  let room: string | null = null;
-  if (roomPart) {
-    const [roomRaw, portFromRoom] = roomPart.split(":");
-    room = roomRaw!;
-    const p = Number(portFromRoom);
-    if (Number.isFinite(p) && p > 0) port = p;
-  }
-  if (!Number.isFinite(port) || port <= 0) port = 5123;
-  return { host, port, room };
+export function parseRelayRedirect(payload: Buffer): RelayRedirect {
+  const r = new ByteReader(payload);
+  const formatVersion = r.readUnsignedByte();
+  const reconnectId = r.readInt();
+  const showFailure = r.readBoolean();
+  const count = r.readInt();
+  if (count < 0 || count > 256 || count > Math.floor(r.remaining / 2)) throw new ProtocolError("invalid reconnect address count");
+  const addresses = Array.from({ length: count }, () => r.readUTF());
+  return { formatVersion, reconnectId, showFailure, addresses };
 }
 
 /**
@@ -136,7 +141,6 @@ class Session extends EventEmitter {
   private lastPingSentAt = 0;
   private lastPongAt = 0;
   private joinedOnce = false;
-  private registerSentAtLeastOnce = false;
   /** 117 去重（同提示只答一次）。 */
   private last117Key = "";
   /** 跳转后保留的房间码（117 应答用）。 */
@@ -145,12 +149,21 @@ class Session extends EventEmitter {
   private redirects = 0;
   private redirecting = false;
   private disconnectedNotified = false;
+  private connectionGeneration = 0;
+  private readonly powState = createPowState();
+  private password: string | null;
+  private pendingInput: { request: SessionInputRequest; timer: NodeJS.Timeout } | null = null;
 
   constructor(
     private target: ConnectTarget,
     private opts: SessionOptions,
   ) {
     super();
+    this.password = opts.password ?? null;
+  }
+
+  get pendingInputRequest(): SessionInputRequest | null {
+    return this.pendingInput?.request ?? null;
   }
 
   private log(msg: string) {
@@ -163,6 +176,23 @@ class Session extends EventEmitter {
   }
 
   async start(): Promise<void> {
+    const generation = ++this.connectionGeneration;
+    const previous = this.conn;
+    this.conn = null;
+    previous?.close("replaced connection");
+    this.stopHeartbeat();
+    this.clearInputRequest();
+    this.joinedOnce = false;
+    this.info = null;
+    this.roomInfo = null;
+    this.roster = [];
+    this.yourTeamId = -1;
+    this.settings = {};
+    this.slotCount = null;
+    this.phase = "lobby";
+    this.pingMs = null;
+    this.last117Key = "";
+    this.redirecting = false;
     this.disconnectedNotified = false;
     this.setState("connecting");
     const conn = new RwConnection({
@@ -171,13 +201,22 @@ class Session extends EventEmitter {
       socksProxy: this.opts.socksProxy,
     });
     this.conn = conn;
-    conn.on("frame", (frame) => this.handleFrame(frame));
+    const isCurrent = () => this.conn === conn && generation === this.connectionGeneration;
+    conn.on("frame", (frame) => { if (isCurrent()) this.handleFrame(frame); });
     conn.on("close", (reason) => {
+      if (!isCurrent()) return;
       this.stopHeartbeat();
+      this.clearInputRequest();
       if (this.redirecting) return; // 跳转流程中，不视为断线
       if (this.state !== "kicked") this.notifyDisconnected(reason);
     });
-    await conn.connect();
+    try {
+      await conn.connect();
+    } catch (error) {
+      if (isCurrent()) this.disconnect(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    if (!isCurrent()) { conn.close("cancelled connection"); return; }
     this.log(`connected, sending hello`);
     this.setState("awaiting-preregister");
     conn.send(
@@ -186,56 +225,44 @@ class Session extends EventEmitter {
         playerName: this.opts.playerName,
         language: this.opts.language ?? "en",
         queryString: this.target.queryString ?? null,
+        networkVersion: this.opts.networkVersion ?? VERSION_CODE,
       }),
     );
   }
 
-  /**
-   * 178 中继跳转：载荷含 "[TCP]host:port" 或 "[TCP]host/room:port"
-   * （CNKD 系路径内嵌第二跳房间码）。断开并重连真实服务器
-   * （query 不再携带——路由已由第一跳完成）。
-   */
-  private onRedirect(payload: Buffer) {
-    if (this.redirects >= 3) {
-      this.log(`redirect limit reached, ignoring`);
-      return;
+  /** 和原版一样，使用列表首个连接字符串并复用同一目标语法。 */
+  private async onRedirect(payload: Buffer): Promise<void> {
+    const generation = this.connectionGeneration;
+    try {
+      if (this.redirects >= (this.opts.maxRedirects ?? 3)) throw new Error("redirect limit reached");
+      const redirect = parseRelayRedirect(payload);
+      const address = redirect.addresses[0];
+      if (!address) throw new Error("reconnect packet has no target");
+      const parsed = parseConnectTarget(address);
+      this.redirects++;
+      this.redirecting = true;
+      this.stopHeartbeat();
+      this.clearInputRequest();
+      const previous = this.conn;
+      this.conn = null;
+      previous?.close("redirecting");
+      this.setState("connecting");
+      const next = await resolveTarget(parsed, this.password);
+      if (generation !== this.connectionGeneration) return;
+      this.pendingRelayRoomId = next.queryString ?? this.target.queryString ?? this.pendingRelayRoomId;
+      this.target = next;
+      this.log(`relay redirect #${this.redirects}`);
+      this.redirecting = false;
+      await this.start();
+    } catch (error) {
+      if (generation !== this.connectionGeneration) return;
+      this.redirecting = false;
+      this.disconnect(`reconnect failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const text = payload.toString("latin1");
-    const addr = parseRelayRedirect(text);
-    if (!addr) {
-      this.log(`got 178 but no address found: ${JSON.stringify(text.slice(0, 60))}`);
-      return;
-    }
-    const { host, port, room } = addr;
-    this.redirects++;
-    this.redirecting = true;
-    this.log(`relay redirect #${this.redirects} → ${host}${room ? "/" + room : ""}:${port}`);
-    this.joinedOnce = false;
-    this.registerSentAtLeastOnce = false;
-    this.conn?.close("redirecting");
-    // CNKD 系节点用 hello 的 query string 做房间路由（实测：不带 query 会被
-    // 分配到自动托管空房，而非码对应的真房）。178 内嵌的 room 即第二跳路由键。
-    // 兜底：若节点改为 117 提问，pendingRelayRoomId 也能答上。
-    if (room) {
-      this.pendingRelayRoomId = room;
-    } else if (this.target.queryString) {
-      this.pendingRelayRoomId = this.target.queryString;
-    }
-    this.target = {
-      host,
-      port,
-      queryString: room ?? undefined,
-      gameId: this.target.gameId,
-      label: `${host}${room ? "/" + room : ""}:${port} (redirected)`,
-    };
-    this.redirecting = false;
-    void this.start().catch((err) => {
-      this.log(`redirect connect failed: ${err instanceof Error ? err.message : err}`);
-      this.notifyDisconnected(String(err));
-    });
   }
 
   private handleFrame(frame: { type: number; payload: Buffer }) {
+    if (this.redirecting) return;
     if (this.opts.debugFrames) {
       this.log(`frame <- type=${frame.type} len=${frame.payload.length}`);
     }
@@ -264,8 +291,8 @@ class Session extends EventEmitter {
         return this.onRemoteDisconnect(frame.payload);
       case PacketType.RELAY_POW:
         return this.onPow(frame.payload);
-      case PacketType.RELAY_REDIRECT: // 178：RW-HPS 中继要求重连真实服务器
-        return this.onRedirect(frame.payload);
+      case PacketType.RELAY_REDIRECT:
+        return void this.onRedirect(frame.payload);
       default:
         // 106 等剩余握手/系统包
         if (frame.type === 106) return this.onServerInfo(frame.payload);
@@ -303,10 +330,10 @@ class Session extends EventEmitter {
       PacketType.REGISTER_PLAYER,
       buildRegister({
         playerName: this.opts.playerName,
-        networkVersion: this.info.networkVersion,
-        password: this.opts.password ?? null,
+        networkVersion: this.opts.networkVersion ?? VERSION_CODE,
+        password: this.password,
         formatVersion: this.opts.formatVersion ?? 5,
-        unitsChecksum: this.opts.unitsChecksum ?? 0,
+        unitsChecksum: this.opts.unitsChecksum,
         serverUuid: this.info.serverUuid,
         clientUuid: this.opts.clientUuid,
         sessionRandomId: this.info.sessionRandomId,
@@ -314,22 +341,11 @@ class Session extends EventEmitter {
       }),
     );
     this.log(`sent 110 register (format=${this.opts.formatVersion ?? 5})`);
-    this.registerSentAtLeastOnce = true;
   }
 
   /** 113：房间需要密码/密码错误 → 带哈希重发 110。 */
   private onPasswordError() {
-    if (this.opts.password) {
-      this.log(`got 113 (wrong password?)`);
-      this.emit("kicked", "Wrong password");
-      this.setState("kicked");
-      this.conn?.close("wrong password");
-    } else {
-      this.log(`got 113: server requires password but none configured`);
-      this.emit("kicked", "Password required");
-      this.setState("kicked");
-      this.conn?.close("password required");
-    }
+    this.requestInput("password", null, this.password == null ? "Password required" : "Wrong password; enter another password");
   }
 
   /**
@@ -345,9 +361,10 @@ class Session extends EventEmitter {
       requestId = req.requestId;
       prompt = req.prompt;
     } catch {
-      /* ignore */
+      this.disconnect("invalid input request packet");
+      return;
     }
-    // 每轮都应答（节点可能多轮提问：先警告后问房码）；同一提示只打一次日志
+    // 原版提示是任意输入；重复提示仅去重日志，不猜测未知请求的应答。
     const key = `${requestId}:${prompt}`;
     if (this.last117Key !== key) {
       this.last117Key = key;
@@ -356,11 +373,64 @@ class Session extends EventEmitter {
     if (isRoomUnavailablePrompt(prompt)) {
       this.setState("kicked");
       this.emit("kicked", "room not found");
+      this.clearInputRequest();
+      this.stopHeartbeat();
       this.conn?.close("room not found");
       return;
     }
-    const answer = this.opts.relayRoomId ?? this.pendingRelayRoomId ?? this.target.queryString ?? "";
-    this.conn?.send(PacketType.RELAY_118, buildPasswordResponse(requestId, answer));
+    this.requestInput("prompt", requestId, prompt);
+  }
+
+  private requestInput(kind: SessionInputRequest["kind"], requestId: number | null, prompt: string): void {
+    this.clearInputRequest();
+    const connection = this.conn;
+    const generation = this.connectionGeneration;
+    const request: SessionInputRequest = {
+      kind, requestId, prompt, target: { ...this.target },
+      respond: (answer) => {
+        if (this.pendingInput?.request !== request || this.conn !== connection || generation !== this.connectionGeneration) return;
+        this.clearInputRequest();
+        if (answer === null) { this.disconnect("input cancelled"); return; }
+        try {
+          if (kind === "password") { this.password = answer; this.sendRegister(); }
+          else connection?.send(PacketType.RELAY_118, buildPasswordResponse(requestId!, answer));
+        } catch {
+          this.disconnect("could not encode input response");
+        }
+      },
+    };
+    const timer = setTimeout(() => {
+      if (this.pendingInput?.request === request) this.disconnect("input timeout");
+    }, this.opts.inputTimeoutMs ?? 60_000);
+    timer.unref();
+    this.pendingInput = { request, timer };
+    if (this.opts.onInputRequest) {
+      this.emit("inputRequest", request);
+      try {
+        void Promise.resolve(this.opts.onInputRequest(request)).then((answer) => {
+          if (answer !== undefined) request.respond(answer);
+        }).catch(() => {
+          if (this.pendingInput?.request === request) this.disconnect("input handler failed");
+        });
+      } catch {
+        if (this.pendingInput?.request === request) this.disconnect("input handler failed");
+      }
+      return;
+    }
+    if (kind === "prompt") {
+      if (/password|密码|口令/i.test(prompt)) {
+        if (this.password !== null) { request.respond(this.password); return; }
+      } else if (/room|game[\s_-]*(?:id|code)|房间|房號|房号/i.test(prompt)) {
+        const room = this.opts.relayRoomId ?? this.target.queryString ?? this.pendingRelayRoomId;
+        if (room != null) { request.respond(room); return; }
+      }
+    }
+    this.emit("inputRequest", request);
+  }
+
+  private clearInputRequest(): void {
+    if (this.pendingInput) clearTimeout(this.pendingInput.timer);
+    this.pendingInput = null;
   }
 
   private onTeamList(payload: Buffer) {
@@ -469,6 +539,7 @@ class Session extends EventEmitter {
     this.setState("kicked");
     this.emit("kicked", reason);
     this.stopHeartbeat();
+    this.clearInputRequest();
     this.conn?.close(`kicked: ${reason}`);
   }
 
@@ -483,7 +554,7 @@ class Session extends EventEmitter {
   private onPow(payload: Buffer) {
     const start = Date.now();
     try {
-      const challenge = parsePowChallenge(payload);
+      const challenge = parsePowChallenge(payload, this.powState);
       this.log(`pow challenge type=${challenge.type} id=${challenge.id}`);
       const answer = solvePowChallenge(challenge);
       const elapsed = (Date.now() - start) / 1000;
@@ -491,18 +562,8 @@ class Session extends EventEmitter {
         PacketType.RELAY_POW_RECEIVE,
         buildPowResponse(challenge.id, challenge.type, answer, elapsed),
       );
-      // 严格模仿真实客户端：PoW 后不重发 110（RELAY-CN 节点会拒绝重发行为的连接）。
-      // 官方老中继如需重发可设 POW_REREGISTER=1。
-      if (
-        this.state === "awaiting-register" &&
-        this.registerSentAtLeastOnce &&
-        (process.env.POW_REREGISTER === "1" || process.env.POW_REREGISTER === "true")
-      ) {
-        this.log(`pow answered, re-sending register`);
-        this.sendRegister();
-      }
     } catch (err) {
-      this.log(`pow solve failed: ${err instanceof Error ? err.message : err}`);
+      this.disconnect(`pow solve failed: ${err instanceof Error ? err.message : err}`);
     }
   }
 
@@ -548,6 +609,9 @@ class Session extends EventEmitter {
 
   private notifyDisconnected(reason: string): void {
     if (this.disconnectedNotified) return;
+    this.connectionGeneration++;
+    this.clearInputRequest();
+    this.stopHeartbeat();
     this.disconnectedNotified = true;
     this.setState("disconnected");
     this.emit("disconnected", reason);
@@ -570,6 +634,3 @@ export function mergeRosterDelta(current: TeamEntry[], delta: TeamEntry[]): Team
   return [...bySlot.values()].sort((a, b) => a.slotId - b.slotId);
 }
 
-function envRedirectDropQuery(): boolean {
-  return process.env.REDIRECT_DROP_QUERY === "1" || process.env.REDIRECT_DROP_QUERY === "true";
-}
