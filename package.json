@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
     "start": "tsx src/cli.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.include=src/masterserver/** --coverage.include=src/protocol/hashes.ts --coverage.include=src/protocol/integrity.ts --coverage.include=src/protocol/packets/common.ts --coverage.include=src/protocol/packets/pow.ts --coverage.include=src/client/session.ts"
   },
   "dependencies": {
     "tsx": "^4.19.0",
@@ -20,6 +21,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "2.1.9",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
   },

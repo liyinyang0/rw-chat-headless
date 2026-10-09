@@ -60,14 +60,11 @@ const TEAM_SELF_CREDITS = 4000.0;
 /**
  * NetworkEngine.g(i)：注册包 110 的完整性应答串（i2=5 模式）。
  * 注意：`7:` 字段原版 RW 为 e(7)*18*i（乘法，2026-09 从真实原版客户端抓包验证），
- * RWX 反编译重建版误写为 (e(7)*18)+i（加法）——默认按原版；连 RWX 引擎服务器时
- * 设 INTEGRITY_RWX_VARIANT=1 切换加法。其余字段两版一致。
+ * 可读重建源码里出现过加法；此处始终按两份原始反编译和抓包确认的乘法执行。
  * `d:` 段恒为 5*i（判断式两侧为同一表达式）。
  */
 export function integrityString(seed: number): string {
-  const mul7 = process.env.INTEGRITY_RWX_VARIANT === "1"
-    ? javaInt(creditTier(7) * 18 + seed)
-    : javaInt(creditTier(7) * 18 * seed);
+  const mul7 = javaInt(creditTier(7) * 18 * seed);
   const t1 = javaDoubleToString(TEAM_SELF_CREDITS * 11.0 * seed);
   const s =
     `c:${seed}` +
