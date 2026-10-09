@@ -131,7 +131,11 @@ class ReconnectingSession extends EventEmitter {
       });
       await session.start();
     } catch (error) {
-      if (generation !== this.generation || this.stopped || finished) return;
+      if (generation !== this.generation) return;
+      if (this.stopped || finished) {
+        if (!this.retry.enabled) throw error;
+        return;
+      }
       const reason = error instanceof Error ? error.message : String(error);
       if (session) session.disconnect(reason);
       else {

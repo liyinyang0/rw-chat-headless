@@ -179,12 +179,12 @@ export async function runMultiRooms(opts: MultiRoomOptions): Promise<MultiRunRes
   const rawTargets = opts.targets.flatMap((t) => t.split(","));
   const expanded = await expandTargets(rawTargets, log);
   const resolved = await Promise.all(
-    expanded.map(async (t): Promise<ConnectTarget | { error: string }> => {
+    expanded.map(async (t): Promise<ConnectTarget | { error: string } | null> => {
       try {
         if (opts.reconnect?.enabled) {
           parseConnectTarget(t);
-          // 仅供展示原始目标，真正地址由管理层每次重新解析。
-          return { host: "", port: 0, label: t };
+          // 真正地址由管理层每次重新解析；此处仅校验语法。
+          return null;
         }
         return await resolveTarget(parseConnectTarget(t), opts.password ?? null);
       } catch (err) {
@@ -199,8 +199,8 @@ export async function runMultiRooms(opts: MultiRoomOptions): Promise<MultiRunRes
     index: i,
     name: opts.nameStrategy === "same" || i === 0 ? opts.playerName : `${opts.playerName}-${i + 1}`,
     clientId: `${baseUuid}-m${i + 1}`,
-    target: "error" in r ? null : r,
-    error: "error" in r ? r.error : undefined,
+    target: r && "error" in r ? null : r,
+    error: r && "error" in r ? r.error : undefined,
     roomId: "pending",
     history: [],
     session: null,
@@ -211,7 +211,7 @@ export async function runMultiRooms(opts: MultiRoomOptions): Promise<MultiRunRes
   const roomFailedResolvers = new Map<number, () => void>();
 
   for (const room of rooms) {
-    if (!room.target) continue;
+    if (room.error || (!room.target && !opts.reconnect?.enabled)) continue;
     const sessionOptions: SessionOptions = {
       playerName: room.name,
       password: opts.password ?? null,
@@ -228,7 +228,7 @@ export async function runMultiRooms(opts: MultiRoomOptions): Promise<MultiRunRes
     };
     const session = opts.reconnect?.enabled
       ? new ReconnectingSession(expanded[room.index]!, sessionOptions, opts.reconnect, { createSession })
-      : createSession(room.target, sessionOptions);
+      : createSession(room.target!, sessionOptions);
     room.session = session;
     room.settled = settlePromise(session);
     room.failed = new Promise<void>((resolve) => {
@@ -295,11 +295,12 @@ export async function runMultiRooms(opts: MultiRoomOptions): Promise<MultiRunRes
     disconnect: (reason?: string) => room.session?.disconnect(reason),
     snapshot: (): MultiRoomSnapshot => ({
       index: room.index,
-      label: room.target?.label ?? room.error ?? "?",
+      label: room.target?.label ?? room.error ?? expanded[room.index]!,
       name: room.name,
       state: room.session?.state ?? "idle",
       roomId: room.roomId,
-      currentPlayers: (room.session?.roster ?? []).filter((t) => !t.isAi && t.connectionActive && t.name).length,
+      currentPlayers: room.session?.state === "battleroom"
+        ? room.session.roster.filter((t) => !t.isAi && t.connectionActive && t.name).length : 0,
       ...(room.error ? { error: room.error } : {}),
     }),
   }));
