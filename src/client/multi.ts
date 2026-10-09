@@ -13,6 +13,7 @@
 import { listRooms, roomConnectDescriptor, type RoomEntry } from "../masterserver/client.ts";
 import { parseConnectTarget, resolveTarget, TargetError, type ConnectTarget } from "../masterserver/target.ts";
 import { Session, type SessionEvents, type SessionOptions, type SessionState } from "./session.ts";
+import { ReconnectingSession, type ReconnectOptions } from "./reconnecting.ts";
 import { DEFAULT_UNITS_CHECKSUM, type PreregisterInfo } from "../protocol/packets/common.ts";
 import { persistentClientUuid } from "../protocol/identity.ts";
 import type { ServerInfoLite, TeamEntry } from "../protocol/packets/room.ts";
@@ -79,6 +80,8 @@ export interface MultiRoomOptions {
   settleTimeoutMs?: number;
   joinTimeoutMs?: number;
   receiveTimeoutMs?: number;
+  /** 可选重连策略；外部 Worker 管理重试时应保持禁用。 */
+  reconnect?: ReconnectOptions;
   debugFrames?: boolean;
   /** 所有会话及中继跳转共同使用的 SOCKS5 出口。 */
   socksProxy?: SocksProxyTarget;
@@ -178,6 +181,11 @@ export async function runMultiRooms(opts: MultiRoomOptions): Promise<MultiRunRes
   const resolved = await Promise.all(
     expanded.map(async (t): Promise<ConnectTarget | { error: string }> => {
       try {
+        if (opts.reconnect?.enabled) {
+          parseConnectTarget(t);
+          // 仅供展示原始目标，真正地址由管理层每次重新解析。
+          return { host: "", port: 0, label: t };
+        }
         return await resolveTarget(parseConnectTarget(t), opts.password ?? null);
       } catch (err) {
         return { error: err instanceof Error ? err.message : String(err) };
@@ -204,7 +212,7 @@ export async function runMultiRooms(opts: MultiRoomOptions): Promise<MultiRunRes
 
   for (const room of rooms) {
     if (!room.target) continue;
-    const session = createSession(room.target, {
+    const sessionOptions: SessionOptions = {
       playerName: room.name,
       password: opts.password ?? null,
       language: opts.language ?? "zh",
@@ -217,7 +225,10 @@ export async function runMultiRooms(opts: MultiRoomOptions): Promise<MultiRunRes
       debugFrames: opts.debugFrames ?? false,
       clientUuid: room.clientId,
       socksProxy: opts.socksProxy,
-    });
+    };
+    const session = opts.reconnect?.enabled
+      ? new ReconnectingSession(expanded[room.index]!, sessionOptions, opts.reconnect, { createSession })
+      : createSession(room.target, sessionOptions);
     room.session = session;
     room.settled = settlePromise(session);
     room.failed = new Promise<void>((resolve) => {

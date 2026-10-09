@@ -14,7 +14,8 @@
 import { createInterface } from "node:readline";
 import { listRooms, roomConnectDescriptor } from "./masterserver/client.ts";
 import { parseConnectTarget, resolveTarget, TargetError } from "./masterserver/target.ts";
-import { Session } from "./client/session.ts";
+import { Session, type SessionOptions } from "./client/session.ts";
+import { ReconnectingSession, type ReconnectOptions } from "./client/reconnecting.ts";
 import { DEFAULT_UNITS_CHECKSUM } from "./protocol/packets/common.ts";
 import { runMultiRooms, type MultiRunResult } from "./client/multi.ts";
 import { parseSocksProxy } from "./client/connection.ts";
@@ -22,6 +23,17 @@ import { parseSocksProxy } from "./client/connection.ts";
 const env = process.env;
 const NAME = env.NAME || "rw-chat-headless";
 const SOCKS_PROXY = parseSocksProxy(env.RW_SOCKS_PROXY);
+
+function numericEnv(key: string, fallback: number): number {
+  const value = Number(env[key] || fallback);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`invalid ${key}`);
+  return value;
+}
+
+function reconnectOptions(): ReconnectOptions {
+  return { enabled: env.AUTO_RECONNECT === "1", maxRetries: numericEnv("RECONNECT_MAX_RETRIES", 10),
+    baseDelayMs: numericEnv("RECONNECT_BASE_MS", 5000), maxDelayMs: numericEnv("RECONNECT_MAX_MS", 60000) };
+}
 
 function ts(): string {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
@@ -66,10 +78,8 @@ async function cmdList(): Promise<void> {
 async function runSession(target: string): Promise<void> {
   const expanded = await expandTarget(target);
   const parsed = parseConnectTarget(expanded);
-  const resolved = await resolveTarget(parsed, env.PASSWORD || null);
-  info(`目标: ${resolved.label}`);
-
-  const session = new Session(resolved, {
+  info(`目标: ${expanded}`);
+  const options: SessionOptions = {
     playerName: NAME,
     password: env.PASSWORD || null,
     language: env.LANGUAGE || "zh",
@@ -80,7 +90,12 @@ async function runSession(target: string): Promise<void> {
     debugFrames: env.DEBUG === "1" || env.DEBUG === "true",
     clientUuid: env.CLIENT_UUID || undefined,
     socksProxy: SOCKS_PROXY,
-  });
+    joinTimeoutMs: numericEnv("JOIN_TIMEOUT_MS", 45000),
+    receiveTimeoutMs: numericEnv("RECEIVE_TIMEOUT_MS", 60000),
+  };
+  const retry = reconnectOptions();
+  const session = retry.enabled ? new ReconnectingSession(expanded, options, retry)
+    : new Session(await resolveTarget(parsed, env.PASSWORD || null), options);
   session.on("log", (line) => info(line));
 
   session.on("chat", (chat) => {
@@ -166,6 +181,9 @@ async function runMultiSession(targetArgs: string[]): Promise<void> {
     staggerMs: Number(env.MULTI_STAGGER_MS || 1200),
     debugFrames: env.DEBUG === "1" || env.DEBUG === "true",
     socksProxy: SOCKS_PROXY,
+    joinTimeoutMs: numericEnv("JOIN_TIMEOUT_MS", 45000),
+    receiveTimeoutMs: numericEnv("RECEIVE_TIMEOUT_MS", 60000),
+    reconnect: reconnectOptions(),
     log: info,
   });
 

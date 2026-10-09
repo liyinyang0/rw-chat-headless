@@ -13,8 +13,28 @@ export interface ReconnectOptions {
 
 export interface ReconnectDependencies {
   resolve?: (raw: string, password?: string | null) => Promise<ConnectTarget>;
-  createSession?: (target: ConnectTarget, options: SessionOptions) => Session;
+  createSession?: (target: ConnectTarget, options: SessionOptions) => ReconnectSessionSource;
   random?: () => number;
+}
+
+/** 最小会话契约；允许多房 runner 的已有测试/自定义会话工厂。 */
+export interface ReconnectSessionSource {
+  state: SessionState;
+  info: Session["info"];
+  roster: Session["roster"];
+  roomInfo: Session["roomInfo"];
+  settings?: Session["settings"];
+  phase?: Session["phase"];
+  pingMs?: Session["pingMs"];
+  slotCount?: Session["slotCount"];
+  yourTeamId?: Session["yourTeamId"];
+  gameStartInfo?: Session["gameStartInfo"];
+  serverEnded?: boolean;
+  pendingInputRequest?: Session["pendingInputRequest"];
+  on<K extends keyof SessionEvents>(event: K, listener: (payload: SessionEvents[K]) => void): unknown;
+  start(): Promise<void>;
+  sendChat(text: string): boolean | void;
+  disconnect(reason?: string): void;
 }
 
 export function reconnectDelay(attempt: number, base = 5000, cap = 60000, random = Math.random): number {
@@ -31,7 +51,7 @@ declare interface ReconnectingSession {
 
 /** 可选策略层；Session 只检测断线，CNKD 等外部 Worker 可继续直接使用 Session。 */
 class ReconnectingSession extends EventEmitter {
-  private current: Session | null = null;
+  private current: ReconnectSessionSource | null = null;
   private currentState: SessionState = "idle";
   private retryTimer: NodeJS.Timeout | null = null;
   private stopped = true;
@@ -80,7 +100,7 @@ class ReconnectingSession extends EventEmitter {
     if (this.stopped || generation !== this.generation) return;
     this.current = null;
     this.setState("connecting");
-    let session: Session | null = null;
+    let session: ReconnectSessionSource | null = null;
     let finished = false;
     const isCurrent = () => generation === this.generation && this.current === session;
     const finish = (reason: string, terminal = false) => {
@@ -149,7 +169,8 @@ class ReconnectingSession extends EventEmitter {
   }
 
   sendChat(message: string): boolean {
-    return !this.stopped && this.currentState === "battleroom" ? this.current?.sendChat(message) ?? false : false;
+    if (this.stopped || this.currentState !== "battleroom" || !this.current) return false;
+    return this.current.sendChat(message) !== false;
   }
 
   disconnect(reason = "headless client leaving"): void {
