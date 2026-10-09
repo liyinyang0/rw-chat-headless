@@ -90,7 +90,7 @@ async function runSession(target: string): Promise<void> {
 
   session.on("stateChange", (state) => {
     if (state === "battleroom" && session.info) {
-      info(`已在战役室，roomId=${session.info.serverUuid}`);
+      info(`已在战役室，serverUuid=${session.info.serverUuid}`);
     }
   });
 
@@ -118,16 +118,19 @@ async function runSession(target: string): Promise<void> {
     session.sendChat(text);
   });
 
-  try {
-    await session.start();
-  } catch (error) {
-    rl.close();
-    throw error;
-  }
+  let startupFailed = false;
   rl.on("close", () => {
+    if (startupFailed) return;
     session.disconnect("stdin closed");
     setTimeout(() => process.exit(0), 300);
   });
+  try {
+    await session.start();
+  } catch (error) {
+    startupFailed = true;
+    rl.close();
+    throw error;
+  }
 
   // 保持进程
   await new Promise<void>(() => {});
