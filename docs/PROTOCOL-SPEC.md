@@ -1,7 +1,7 @@
 # Rusted Warfare 网络协议线格式规格（字节级）
 
-> 来源：RWX 源码（`core/src/main/java/com/corrodinggames/rts/gameFramework/network/`）逆向提取，
-> 并经真实服务器联调验证（2026-09）。本文件是 rw-chat-headless 实现的规格依据。
+> 来源：`rw_analysis/02-decompiled` 与 `02b-decompiled` 的原始反编译交叉核对，及历史真实客户端抓包。
+> 可读的 `03-deobfuscated` 存在重建错误，不能单独作为网络逻辑依据。2026-10-09 修复和联调记录见 [VANILLA-ROOM-JOIN.md](VANILLA-ROOM-JOIN.md)。
 
 ## 1. 传输与帧
 
@@ -28,10 +28,10 @@ TCP（大端）。帧 = `[i32 payloadLen][i32 packetType][payload]`。
 ```
 C→S 160: UTF magic"com.corrodinggames.rts", i32 4, i32 netVer, i32 platform(2=PC),
          nullable UTF queryString, UTF playerName, UTF language, UTF flags""
-S→C 161: UTF magic, i32 2, i32 netVer(★回显), i32 verCode, UTF pkg, UTF serverUuid,
+S→C 161: UTF magic, i32 2, i32 serverNetVer, i32 verCode, UTF pkg, UTF serverUuid,
          i32 sessionRandomId, i32 integritySalt, i32 0
-C→S 110: UTF magic, i32 5, i32 netVer(=161回显), i32 176, UTF name,
-         nullable UTF sha256(密码), UTF label, UTF clientId, i32 unitsChecksum,
+C→S 110: UTF magic, i32 5, i32 自身netVer(176), i32 自身构建版本(176), UTF name,
+         nullable UTF SHA256(密码), UTF label, UTF clientId, i32 unitsChecksum,
          UTF g(sessionRandomId), UTF hex(integritySalt)
 S→C 115: 团队列表（见 §6）→ 进入战役室
 S→C 106: 房间设置（customUnits 块跳过即可，服务器不索要回执）
@@ -41,7 +41,8 @@ S→C 106: 房间设置（customUnits 块跳过即可，服务器不索要回执
   `d:` 段恒为 `5*seed`（源码中判断式两侧为同一表达式）。
 - **unitsChecksum**：核心单位哈希常数，随版本不同。Rukkit/RW-HPS 不校验（0 可过）；
   真 RW/RWX 服务器校验（用 `tools/capture-server.ts` 从真客户端提取）。
-- 161 在 110 之前到达 → 版本号回显即可跨版本。
+- 客户端发送自身版本；不能通过回显 161 版本号获得跨版本能力。默认 checksum=678359601。
+- 密码和 `clientId=SHA256(baseUuid+当前serverUuid)` 使用固定 64 位大写十六进制；MD5 仍小写。
 - 老服务器（v151 官方 Auto Server）不认 i2 精简格式且强制校验 checksum。
 
 ## 5. 聊天
@@ -79,26 +80,29 @@ C→S 112: bool 未加载, bool isLoading （进房后发 false,false 报告已�
 ## 8. 密码与踢出
 
 ```
-S→C 113: i32 0（需要/错误密码）→ 客户端 110 重发带 sha256(密码)
-S→C 117: byte 0, i32 requestId, UTF prompt（官方中继用于问房间 id！）
+S→C 113: i32 0（需要/错误密码）→ 输入密码后重发 110，带大写 SHA256(密码)
+S→C 117: byte 0, i32 requestId, UTF prompt（任意交互提示，可能是房间号或密码）
 C→S 118: byte 1, i32 requestId, UTF 明文应答
 S→C 150: UTF 踢出原因
 双向 111: UTF 断开原因
 ```
 
+明确的房间号/密码提示可用已知值自动回答，其余通过 `inputRequest` / `onInputRequest` 等待输入。`respond(null)` 取消连接，默认 60 秒超时；旧连接或被替换请求的迟到应答失效。单房 CLI 将下一行原始输入作为应答。
+
 ## 9. 151 PoW 挑战（中继/原版服务器）
 
 ```
 S→C 151: i32 id, i32 type, [bool+int minClient], [bool+int minServer],
-         [type 5/6: UTF 目标hash, UTF 基串, i32 最大迭代]
+         [type 5/6: UTF 目标hash, UTF 基串, i32 最大迭代],
+         [type 7: UTF 重复单元, i32 重复次数]
 C→S 152: i32 id, i32 type, UTF 应答, f32 耗时
 ```
 
 type 0/1=回显 int；2=g()；3/4=`hash14(minC+"|"+minS)`；5/6=暴力找 `i` 使
 `hash14(base+i)==目标`；7=字符串重复。
-**hash14 格式（RW-HPS 侧）**：`BigInteger(sha256).toString(16)`（去前导零）
-→大写→截 14。注意与 RW 客户端的 `%064X` 补零格式在前导零时不同，以服务器侧为准。
-实测官方 relay（Relay ASIA2/US2）在 160 后立即发 type 5（off∈0-10，秒解）。
+**原版 hash14**：SHA-256 固定补零到 64 位、大写，再截前 14 位，保留前导零。
+两项参数每会话初始为 55、66，仅在存在标志为真时更新；缺省时沿用旧值。type 6 先将有效 minClient 追加到基串，再搜索。搜索范围含最大迭代值，失败返回 `-1`；工作量超过限制返回 `max`。未知类型回空串。
+历史抓包出现过 type 5 小范围搜索；不据此假定每个节点都发送同一种挑战。
 
 ## 10. 主服务器 HTTP（gs1/gs4 `/masterserver/1.4/interface`）
 
@@ -108,13 +112,21 @@ type 0/1=回显 int；2=g()；3/4=`hash14(minC+"|"+minS)`；5/6=暴力找 `i` �
 - `POST action=get&game_id=…&c=code(&p_hash=…)`: 行3 含 `sha256ShortHash("game_"+code)`，
   行5 CSV `[3]=host [5]=port`。code=md5 截断（高段位内嵌 g()）。
 - 连接描述符：`gameVersionNumber==0` → `host:port`；否则 `get|serverId|verNum|pwd|port`。
+- 密码房 `p_hash=repeatHash(gameId+password,3)`：共四次 SHA-256，每次大写结果作为下一次输入，空密码和未提供密码可区分。
+- 并发请求分别完成协议头、`[FAILED]`、完整性和解析检查后再竞争；选定有效结果或全部失败后取消其余请求。
 
 ## 11. 房间代码 → 中继
 
-输入无 `.` `:` `/` 且长度>4 → 连接 `<首字母>.relay.corrodinggames.com`，
+输入无 `.` `:` `/` `\`、非 `localhost` 且长度>4 → 连接 `<首字符>.relay.corrodinggames.com:5123`，
 160 的 queryString=完整代码。
 
-## 12. 实测兼容性矩阵（2026-09-05，全部真机验证）
+178 跳转载荷：`byte formatVersion, i32 reconnectId, bool showFailure, i32 count, count×UTF address`。
+布尔值控制原版失败提示，不是 TCP/UDP 标志。此源码版本选择第一个地址，交回同一个目标解析器。`[TCP]host:6000/room:7000` 的端口为 6000，查询串为完整的 `room:7000`。
+默认最多三次跳转；坏包、空地址或超限明确结束连接，旧连接的事件和异步应答不能干扰新连接。
+
+## 12. 历史兼容性矩阵（2026-09-05）
+
+下表保留旧实现的历史记录，不代表本次原版协议修复已经逐类重新验证。当前验证范围见统一入房说明。
 
 | 服务器类型 | 版本 | 结果 |
 |---|---|---|
@@ -130,7 +142,7 @@ type 0/1=回显 int；2=g()；3/4=`hash14(minC+"|"+minS)`；5/6=暴力找 `i` �
    → 161（中继构造，uuid="RELAY-CN Team & Copyright dr@der.kim"）
    → 110 注册（format=5）→ 151 PoW（随机 type 0-5）→ 152 应答
    ⚠️ PoW 后【不要】重发 110 —— 节点会将重发行为判定为异常拒绝
-② → 178 RECONNECT_TO（"[TCP]host:port"）→ 断开，重连节点（query 不带！）
+② → 二进制 178 RECONNECT_TO → 断开，重连节点（按下发地址保留其 query）
    → 161 → 110 → 151 → 152 → 中继系统公告（141）
 ③ → 第三跳 161（真游戏房，netVer=176，salt=W 固定、seed 每连接随机）
    → 110 format=5（checksum=678359601 + g() + h()）→ 115/106 → 战役室
@@ -139,14 +151,15 @@ type 0/1=回显 int；2=g()；3/4=`hash14(minC+"|"+minS)`；5/6=暴力找 `i` �
 
 ## 14. 关键公式勘误（与真实原版客户端抓包逐字对比得出）
 
-RWX 仓库是反编译重建版，与原版 RW 存在两处协议细节差异（本客户端默认按原版）：
+可读重建源码不能替代原始反编译或抓包。此处统一执行原版协议，不根据服务器品牌切换公式：
 
 1. **g() 的 `7:` 字段**：原版 = `e(7)*18*i`（乘法）；RWX 重建版误写为 `(e(7)*18)+i`。
-   连 RWX 引擎服务器时设 `INTEGRITY_RWX_VARIANT=1` 切回加法版。
+   两份原始反编译一致使用乘法；已移除 `INTEGRITY_RWX_VARIANT` 加法开关。
 2. **h(i)** = `String.format("#%06X", i & 0xFFFFFF)`（`#` 前缀+补零 6 位+大写），
    不是 `Integer.toHexString`。应答错会被归入 noExtraChecks → 空理由踢出。
 3. **176 核心单位校验和 = 678359601**（0x286EF231，从真实 RWX 客户端抓取，
    已内置为默认值；其他版本用 `tools/capture-server.ts` 提取）。
+4. `get|` 的 code 来自字段 `[2]`；151 的 g() 分支是 type 2。可读重建版分别出现 `[0]` 和重复 type 0 的错误，具体源码位置见 [审计记录](ROOM-JOIN-AUDIT.md#7-rw_analysis-的源码使用边界)。
 
 ## 15. 开局应答（2026-09-11 透明代理抓包，RCN/IronCore 节点实测）
 

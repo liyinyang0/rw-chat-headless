@@ -632,4 +632,3 @@ export function mergeRosterDelta(current: TeamEntry[], delta: TeamEntry[]): Team
   }
   return [...bySlot.values()].sort((a, b) => a.slotId - b.slotId);
 }
-

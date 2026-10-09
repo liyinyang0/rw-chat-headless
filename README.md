@@ -6,7 +6,7 @@
 **仅聊天**：不当房主、不参与对局操作，纯"挂房间里说话/收消息"的无头实例。
 纯 TypeScript / Node 22 协议实现：无游戏引擎、无 UI、无图形依赖，单实例内存 ~40MB。
 
-本仓库只提供"客户端本体"。要接 AI / 自动回复 / 桥接外部服务，见下文[编程接入](#编程接入自己接机器人)——
+本仓库只提供"客户端本体"。要接 AI / 自动回复 / 桥接外部服务，见下文[编程接入](#编程接入自己接agent)——
 你自己的机器人逻辑自己写，客户端把 `chat` 事件和 `sendChat()` 留给你。
 
 ## 能力
@@ -23,7 +23,9 @@
 - ❌ v151 官方 Auto Server（版本专属校验和，暂无常数）
 
 > 协议字节级规格见 [docs/PROTOCOL-SPEC.md](docs/PROTOCOL-SPEC.md)。
-> g() 公式 `7:` 字段原版为乘法（连 RWX 引擎服务器可设 `INTEGRITY_RWX_VARIANT=1`）；h() 为 `#%06X` 格式。
+> g() 公式 `7:` 字段统一使用原版乘法；h() 为 `#%06X` 格式。
+> 入房实现按 TCP / 176 协议统一处理代码、列表描述符、地址和中继跳转，不按服务器品牌切换。
+> 2026-10-09 已验证公开列表房间和用户房间 `rkc595` 的双客户端聊天回显；UDP、其他版本和所有社区扩展尚未全面验证。改动与证据见 [统一入房说明](docs/VANILLA-ROOM-JOIN.md)。
 
 ## 快速开始
 
@@ -75,12 +77,14 @@ session.on("stateChange", (s) => console.log("state:", s));
 await session.start();
 ```
 
-`session.roster` 是当前名册（含 AI / 掉线 / 观战标记），`session.info.serverUuid` 是房间稳定标识。
+`session.roster` 是当前名册（含 AI / 掉线 / 观战标记），`session.info.serverUuid` 是服务器下发的身份字段；共享中继可能在多个房间复用，不能单独用它确认目标房间。
 多房间编排用 `runMultiRooms()`（见 `src/client/multi.ts`），每房一个 handle。
+
+服务器要求密码或其他输入时，可监听 `inputRequest`，再调用 `request.respond(answer)`；`null` 取消连接。也可在 `SessionOptions.onInputRequest` 中返回应答。单房 CLI 将下一行作为应答；无法判断含义的 117 提示会等待输入，默认 60 秒超时。公开列表密码房在地址解析前需要 `PASSWORD`。
 
 ## 核心单位校验和（UNITS_CHECKSUM）
 
-176 版常数 678359601 已内置为默认值。其他版本如被校验拒绝，用抓包工具提取一次即可：
+176 版常数 678359601 已内置为默认值。自定义校验和可通过抓包提取；其他版本还可能需要相应包结构，不能仅靠替换常数保证兼容：
 
 ```bash
 npx tsx tools/capture-server.ts 5123     # 监听 127.0.0.1:5123（会自动回合成 161）
@@ -96,7 +100,7 @@ UNITS_CHECKSUM=NNNN npx tsx src/cli.ts join <target>
 
 ## 客户端身份（每部署一份，默认持久）
 
-客户端对服务器的身份（clientId）由一个客户端 UUID 派生：`sha256(uuid + 每跳 serverUuid)`，
+客户端对服务器的身份（clientId）由一个客户端 UUID 派生：`SHA256(uuid + 每跳 serverUuid)`（固定 64 位大写），
 模拟真实客户端逐跳派生。这个 UUID 的默认行为：
 
 - **首次运行自动生成随机值**，持久化在 `data/client-uuid`——每个部署一份、互不相同，
@@ -106,6 +110,7 @@ UNITS_CHECKSUM=NNNN npx tsx src/cli.ts join <target>
 - `data/` 已在 `.gitignore` 里，身份文件不会被误提交
 
 多房间模式下所有会话共享同一基础 UUID，仅加 `-m1/-m2/…` 槽位后缀区分。
+本次修复将旧版小写身份哈希改为原版大写格式，即使基础 UUID 不变，服务端也可能将其识别为新身份。
 
 ## 工具（tools/）
 
@@ -123,13 +128,14 @@ UNITS_CHECKSUM=NNNN npx tsx src/cli.ts join <target>
 - 聊天有反刷屏（60 秒条数上限）：自动回复勿高频触发
 - 明示机器人身份（起个一眼能认出的名字），别伪装真人
 - 房主没同意就别赖在人家房里；被踢就退
-- 官方 relay 连上后 117 会问房间 id：配 `RELAY_ROOM_ID`（`new` 开新房要当房主，本项目不支持）
+- 已输入的房间码会用于明确的 117 房间号提示；直连中继时可配 `RELAY_ROOM_ID`（`new` 开新房要当房主，本项目不支持）
 
 ## 开发
 
 ```bash
 npm test              # 协议、会话、多房与生命周期测试
 npm run typecheck     # tsc --noEmit
+npm run test:coverage # 本轮修改的协议模块覆盖率
 ```
 
 ## License

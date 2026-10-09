@@ -24,7 +24,8 @@ you write your own bot logic; the client hands you the `chat` event and `sendCha
 - ❌ v151 official Auto Server (version-specific checksum, no constant available yet)
 
 > Byte-level protocol spec: [docs/PROTOCOL-SPEC.md](docs/PROTOCOL-SPEC.md).
-> In the g() formula the `7:` field is multiplication in the vanilla client (set `INTEGRITY_RWX_VARIANT=1` for RWX-engine servers); h() is `#%06X` format.
+> The g() formula always uses vanilla multiplication for `7:`; h() uses `#%06X`.
+> Room codes, list descriptors, addresses and binary relay redirects share one TCP / 176 join flow. Public-list and `rkc595` two-client chat checks passed on 2026-10-09; UDP, other versions and community extensions are not fully verified. See [join changes and evidence](docs/VANILLA-ROOM-JOIN.md).
 
 ## Quick start
 
@@ -76,7 +77,7 @@ session.on("stateChange", (s) => console.log("state:", s));
 await session.start();
 ```
 
-`session.roster` is the current roster (with AI / disconnected / spectator flags), `session.info.serverUuid` is the room's stable identifier.
+`session.roster` is the current roster (with AI / disconnected / spectator flags). `session.info.serverUuid` is a server identity field; shared relays can reuse it across rooms, so it cannot alone identify a room.
 For multi-room orchestration use `runMultiRooms()` (see `src/client/multi.ts`), one handle per room.
 
 ## Units checksum (UNITS_CHECKSUM)

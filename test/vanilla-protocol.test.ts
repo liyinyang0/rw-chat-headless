@@ -32,7 +32,7 @@ describe("vanilla 178 binary reconnect packet", () => {
   it("reads Java UTF address boundaries and preserves opaque query text", () => {
     const payload = new ByteWriter().writeByte(0).writeInt(42).writeBoolean(true).writeInt(3)
       .writeUTF("example.com").writeUTF("r12345").writeUTF("[TCP]host.example:6000/房间:7000").toBuffer();
-    expect(parseRelayRedirect(payload as never)).toEqual({
+    expect(parseRelayRedirect(payload)).toEqual({
       formatVersion: 0, reconnectId: 42, showFailure: true,
       addresses: ["example.com", "r12345", "[TCP]host.example:6000/房间:7000"],
     });
@@ -40,13 +40,13 @@ describe("vanilla 178 binary reconnect packet", () => {
 
   it.each([-1, 10000])("rejects invalid address count %i", (count) => {
     const payload = new ByteWriter().writeByte(0).writeInt(0).writeBoolean(false).writeInt(count).toBuffer();
-    expect(() => parseRelayRedirect(payload as never)).toThrow();
+    expect(() => parseRelayRedirect(payload)).toThrow();
   });
 
   it("rejects truncated strings instead of scanning incidental text", () => {
     const payload = new ByteWriter().writeByte(0).writeInt(0).writeBoolean(false).writeInt(1)
       .writeUTF("[TCP]example.com:5123").toBuffer();
-    expect(() => parseRelayRedirect(payload.subarray(0, -1) as never)).toThrow();
+    expect(() => parseRelayRedirect(payload.subarray(0, -1))).toThrow();
   });
 });
 

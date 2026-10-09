@@ -3,7 +3,7 @@ import { integrityString } from "../integrity.ts";
 import { rwSha256ShortHash } from "../hashes.ts";
 
 /**
- * 151 RELAY_POW：服务器下发的计算挑战（原版 RW 服务器/中继使用；RWX 自身不发送）。
+ * 151 RELAY_POW：服务器下发的计算挑战。
  * 类型 0-7，对齐 NetworkEngine case 151 的客户端求解逻辑，应答经 152 回传。
  */
 
