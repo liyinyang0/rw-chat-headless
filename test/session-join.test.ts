@@ -246,4 +246,14 @@ describe("session registration and input lifecycle", () => {
       expect(session.state).toBe("kicked"); expect(session.pendingInputRequest).toBeNull();
     }
   });
+
+  it("ends the observed CNKD missing-room prompt without asking or resending a code", () => {
+    const { session, conn } = fixture(); const input = vi.fn(); const kicked = vi.fn();
+    session.on("inputRequest", input); session.on("kicked", kicked);
+    (session as any).handleFrame({ type: 117, payload: new ByteWriter().writeByte(0).writeInt(5)
+      .writeUTF("CNKD团队提示：你输入的房号是K595 房间不存在 输入new建立一个房间 或加入官方群寻求帮助").toBuffer() });
+    expect(session.state).toBe("kicked"); expect(kicked).toHaveBeenCalledWith("room not found");
+    expect(input).not.toHaveBeenCalled(); expect(conn.send).not.toHaveBeenCalled();
+    expect(session.pendingInputRequest).toBeNull();
+  });
 });
