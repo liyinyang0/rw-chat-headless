@@ -77,6 +77,8 @@ export interface MultiRoomOptions {
   staggerMs?: number;
   /** 单房等待进房的平坦超时 ms（默认 45000）。 */
   settleTimeoutMs?: number;
+  joinTimeoutMs?: number;
+  receiveTimeoutMs?: number;
   debugFrames?: boolean;
   /** 所有会话及中继跳转共同使用的 SOCKS5 出口。 */
   socksProxy?: SocksProxyTarget;
@@ -208,6 +210,8 @@ export async function runMultiRooms(opts: MultiRoomOptions): Promise<MultiRunRes
       language: opts.language ?? "zh",
       formatVersion: opts.formatVersion ?? 5,
       unitsChecksum: opts.unitsChecksum ?? DEFAULT_UNITS_CHECKSUM,
+      joinTimeoutMs: opts.joinTimeoutMs ?? settleTimeoutMs,
+      receiveTimeoutMs: opts.receiveTimeoutMs,
       onInputRequest: opts.onInputRequest,
       relayRoomId: opts.relayRoomId ?? null,
       debugFrames: opts.debugFrames ?? false,
@@ -256,7 +260,10 @@ export async function runMultiRooms(opts: MultiRoomOptions): Promise<MultiRunRes
         room.failed.then(() => true),
         delay(settleTimeoutMs).then(() => false),
       ]);
-      if (!settledInTime) room.error = room.error ?? "join timeout";
+      if (!settledInTime) {
+        room.error = room.error ?? "join timeout";
+        room.session?.disconnect("join timeout");
+      }
     }),
   );
 

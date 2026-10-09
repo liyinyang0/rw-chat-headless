@@ -79,6 +79,10 @@ export interface SessionOptions {
   /** 房主开局时的策略：stay（默认）=留在房间并回 112 报已加载；leave=开局即断开。 */
   onGameStart?: "stay" | "leave";
   heartbeatMs?: number;
+  /** 整次入房（含中继跳转）截止时间；0 禁用，默认 45 秒。输入等待暂停此预算。 */
+  joinTimeoutMs?: number;
+  /** 入房后未收到完整帧的宽限；0 禁用，默认 60 秒。 */
+  receiveTimeoutMs?: number;
   /** 打印每个收到的帧类型（调试用）。 */
   debugFrames?: boolean;
   maxRedirects?: number;
@@ -141,8 +145,10 @@ class Session extends EventEmitter {
 
   private conn: RwConnection | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
-  private lastPingSentAt = 0;
-  private lastPongAt = 0;
+  private joinTimer: NodeJS.Timeout | null = null;
+  private receiveTimer: NodeJS.Timeout | null = null;
+  private joinRemainingMs = 0;
+  private joinExpiresAt = 0;
   private joinedOnce = false;
   /** 117 去重（同提示只答一次）。 */
   private last117Key = "";
@@ -179,6 +185,9 @@ class Session extends EventEmitter {
   }
 
   async start(): Promise<void> {
+    this.clearDeadlineTimers();
+    this.joinRemainingMs = this.opts.joinTimeoutMs ?? 45_000;
+    this.resumeJoinDeadline();
     this.redirects = 0;
     this.pendingRelayRoomId = null;
     await this.openConnection();
@@ -190,8 +199,10 @@ class Session extends EventEmitter {
     this.conn = null;
     previous?.close("replaced connection");
     this.stopHeartbeat();
+    this.clearReceiveDeadline();
     this.clearInputRequest();
     this.joinedOnce = false;
+    this.resumeJoinDeadline();
     this.info = null;
     this.roomInfo = null;
     this.roster = [];
@@ -214,11 +225,16 @@ class Session extends EventEmitter {
     });
     this.conn = conn;
     const isCurrent = () => this.conn === conn && generation === this.connectionGeneration;
-    conn.on("frame", (frame) => { if (isCurrent()) this.handleFrame(frame); });
+    conn.on("frame", (frame) => {
+      if (!isCurrent()) return;
+      this.refreshReceiveDeadline();
+      this.handleFrame(frame);
+    });
     conn.on("close", (reason) => {
       if (!isCurrent()) return;
       this.stopHeartbeat();
       this.clearInputRequest();
+      this.clearDeadlineTimers();
       if (this.redirecting) return; // 跳转流程中，不视为断线
       if (this.state !== "kicked") this.notifyDisconnected(reason);
     });
@@ -253,8 +269,14 @@ class Session extends EventEmitter {
       const parsed = parseConnectTarget(address);
       this.redirects++;
       this.redirecting = true;
+      if (this.joinedOnce) {
+        this.joinRemainingMs = this.opts.joinTimeoutMs ?? 45_000;
+        this.joinedOnce = false;
+      }
       this.stopHeartbeat();
+      this.clearReceiveDeadline();
       this.clearInputRequest();
+      this.resumeJoinDeadline();
       const previous = this.conn;
       this.conn = null;
       previous?.close("redirecting");
@@ -385,6 +407,7 @@ class Session extends EventEmitter {
       this.emit("kicked", "room not found");
       this.clearInputRequest();
       this.stopHeartbeat();
+      this.clearDeadlineTimers();
       this.conn?.close("room not found");
       return;
     }
@@ -393,6 +416,8 @@ class Session extends EventEmitter {
 
   private requestInput(kind: SessionInputRequest["kind"], requestId: number | null, prompt: string): void {
     this.clearInputRequest();
+    this.pauseJoinDeadline();
+    this.clearReceiveDeadline();
     const connection = this.conn;
     const generation = this.connectionGeneration;
     const request: SessionInputRequest = {
@@ -401,6 +426,8 @@ class Session extends EventEmitter {
         if (this.pendingInput?.request !== request || this.conn !== connection || generation !== this.connectionGeneration) return;
         this.clearInputRequest();
         if (answer === null) { this.disconnect("input cancelled"); return; }
+        this.resumeJoinDeadline();
+        this.refreshReceiveDeadline();
         try {
           if (kind === "password") { this.password = answer; this.sendRegister(); }
           else connection?.send(PacketType.RELAY_118, buildPasswordResponse(requestId!, answer));
@@ -459,6 +486,9 @@ class Session extends EventEmitter {
       }
       if (!this.joinedOnce) {
         this.joinedOnce = true;
+        this.clearJoinDeadline();
+        this.joinRemainingMs = 0;
+        this.refreshReceiveDeadline();
         this.setState("battleroom");
         this.log(`in battleroom: ${this.roster.filter((t) => !t.isAi && t.connectionActive).length} active players`);
         // 报告已加载，避免阻塞房主开局
@@ -571,7 +601,6 @@ class Session extends EventEmitter {
   private onHeartBeatResponse(payload: Buffer) {
     try {
       const { echo } = parseHeartBeatResponse(payload);
-      this.lastPongAt = Date.now();
       const rtt = Date.now() - Number(echo);
       if (rtt > 0 && rtt < 10_000) {
         this.pingMs = rtt;
@@ -589,6 +618,7 @@ class Session extends EventEmitter {
     this.emit("kicked", reason);
     this.stopHeartbeat();
     this.clearInputRequest();
+    this.clearDeadlineTimers();
     this.conn?.close(`kicked: ${reason}`);
   }
 
@@ -622,7 +652,6 @@ class Session extends EventEmitter {
     this.heartbeatTimer = setInterval(() => {
       if (!this.conn || this.conn.isClosed) return;
       // 服务器 accept 时 setSoTimeout(15s)：必须周期性发包保活
-      this.lastPingSentAt = Date.now();
       this.conn.send(PacketType.HEART_BEAT, buildHeartBeat());
     }, interval);
     this.heartbeatTimer.unref();
@@ -633,6 +662,44 @@ class Session extends EventEmitter {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+  }
+
+  private clearJoinDeadline(): void {
+    if (this.joinTimer) clearTimeout(this.joinTimer);
+    this.joinTimer = null;
+  }
+
+  private pauseJoinDeadline(): void {
+    if (this.joinTimer) this.joinRemainingMs = Math.max(1, this.joinExpiresAt - Date.now());
+    this.clearJoinDeadline();
+  }
+
+  private resumeJoinDeadline(): void {
+    if (this.joinTimer || this.joinedOnce || this.pendingInput || this.joinRemainingMs <= 0) return;
+    this.joinExpiresAt = Date.now() + this.joinRemainingMs;
+    this.joinTimer = setTimeout(() => this.disconnect("join timeout"), this.joinRemainingMs);
+    this.joinTimer.unref();
+  }
+
+  private clearReceiveDeadline(): void {
+    if (this.receiveTimer) clearTimeout(this.receiveTimer);
+    this.receiveTimer = null;
+  }
+
+  private refreshReceiveDeadline(): void {
+    this.clearReceiveDeadline();
+    const timeout = this.opts.receiveTimeoutMs ?? 60_000;
+    if (!this.joinedOnce || this.pendingInput || timeout <= 0) return;
+    const generation = this.connectionGeneration;
+    this.receiveTimer = setTimeout(() => {
+      if (generation === this.connectionGeneration) this.disconnect("receive timeout");
+    }, timeout);
+    this.receiveTimer.unref();
+  }
+
+  private clearDeadlineTimers(): void {
+    this.clearJoinDeadline();
+    this.clearReceiveDeadline();
   }
 
   sendChat(message: string): boolean {
@@ -647,6 +714,7 @@ class Session extends EventEmitter {
 
   disconnect(reason = "headless client leaving"): void {
     this.stopHeartbeat();
+    this.clearDeadlineTimers();
     try {
       this.conn?.send(PacketType.DISCONNECT, buildDisconnect(reason));
     } catch {
@@ -661,6 +729,7 @@ class Session extends EventEmitter {
     this.connectionGeneration++;
     this.clearInputRequest();
     this.stopHeartbeat();
+    this.clearDeadlineTimers();
     this.disconnectedNotified = true;
     this.setState("disconnected");
     this.emit("disconnected", reason);
