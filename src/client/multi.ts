@@ -67,7 +67,6 @@ export interface MultiRoomOptions {
   language?: string;
   formatVersion?: 2 | 5;
   unitsChecksum?: number;
-  networkVersion?: number;
   onInputRequest?: SessionOptions["onInputRequest"];
   relayRoomId?: string | null;
   /** 玩家名策略：suffix=第 2 个会话起加 -2/-3（默认，防同服务器重名）；same=全部同名。 */
@@ -209,7 +208,6 @@ export async function runMultiRooms(opts: MultiRoomOptions): Promise<MultiRunRes
       language: opts.language ?? "zh",
       formatVersion: opts.formatVersion ?? 5,
       unitsChecksum: opts.unitsChecksum ?? DEFAULT_UNITS_CHECKSUM,
-      networkVersion: opts.networkVersion,
       onInputRequest: opts.onInputRequest,
       relayRoomId: opts.relayRoomId ?? null,
       debugFrames: opts.debugFrames ?? false,

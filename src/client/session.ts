@@ -68,8 +68,6 @@ export interface SessionOptions {
   formatVersion?: 2 | 5;
   /** 核心单位校验和（真 RWX 服务器会校验；Rukkit/RW-HPS 不校验）。 */
   unitsChecksum?: number;
-  /** 自身支持的网络版本，默认 176；修改时需要匹配的单位校验和/协议实现。 */
-  networkVersion?: number;
   /** 官方中继的房间 id（117 提问时的应答；null 则回当前 query）。 */
   relayRoomId?: string | null;
   /** 固定客户端 UUID 种子；每次中继跳转后结合当前 serverUuid 派生最终 ID。 */
@@ -176,6 +174,12 @@ class Session extends EventEmitter {
   }
 
   async start(): Promise<void> {
+    this.redirects = 0;
+    this.pendingRelayRoomId = null;
+    await this.openConnection();
+  }
+
+  private async openConnection(): Promise<void> {
     const generation = ++this.connectionGeneration;
     const previous = this.conn;
     this.conn = null;
@@ -225,7 +229,7 @@ class Session extends EventEmitter {
         playerName: this.opts.playerName,
         language: this.opts.language ?? "en",
         queryString: this.target.queryString ?? null,
-        networkVersion: this.opts.networkVersion ?? VERSION_CODE,
+        networkVersion: VERSION_CODE,
       }),
     );
   }
@@ -253,7 +257,7 @@ class Session extends EventEmitter {
       this.target = next;
       this.log(`relay redirect #${this.redirects}`);
       this.redirecting = false;
-      await this.start();
+      await this.openConnection();
     } catch (error) {
       if (generation !== this.connectionGeneration) return;
       this.redirecting = false;
@@ -330,7 +334,7 @@ class Session extends EventEmitter {
       PacketType.REGISTER_PLAYER,
       buildRegister({
         playerName: this.opts.playerName,
-        networkVersion: this.opts.networkVersion ?? VERSION_CODE,
+        networkVersion: VERSION_CODE,
         password: this.password,
         formatVersion: this.opts.formatVersion ?? 5,
         unitsChecksum: this.opts.unitsChecksum,
@@ -348,11 +352,7 @@ class Session extends EventEmitter {
     this.requestInput("password", null, this.password == null ? "Password required" : "Wrong password; enter another password");
   }
 
-  /**
-   * 117：中继房间选择/密码请求。语义（官方中继与 RELAY-CN 集群一致）：
-   * 应答 = 房间码（进房）/"new"（建房）/房间密码。
-   * 默认回当前连接的房间码（queryString），可用 RELAY_ROOM_ID 覆盖。
-   */
+  /** 117 是任意输入请求；明确的房间号/密码提示自动应答，其余交给调用方。 */
   private onRelayPasswordRequest(payload: Buffer) {
     let requestId = 0;
     let prompt = "";
@@ -420,7 +420,7 @@ class Session extends EventEmitter {
     if (kind === "prompt") {
       if (/password|密码|口令/i.test(prompt)) {
         if (this.password !== null) { request.respond(this.password); return; }
-      } else if (/room|game[\s_-]*(?:id|code)|房间|房號|房号/i.test(prompt)) {
+      } else if (/\b(?:room|game)[\s_-]*(?:id|code|number)\b|\benter\s+(?:a\s+|the\s+)?room\b|房间(?:号|\s*id)|房號|房号/i.test(prompt)) {
         const room = this.opts.relayRoomId ?? this.target.queryString ?? this.pendingRelayRoomId;
         if (room != null) { request.respond(room); return; }
       }
@@ -617,7 +617,6 @@ class Session extends EventEmitter {
     this.emit("disconnected", reason);
   }
 }
-
 export { Session };
 
 /** 精简 115 只覆盖网络状态；名字、阵营、观战和房主原始标志沿用完整名单。 */
