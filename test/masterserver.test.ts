@@ -51,4 +51,21 @@ describe("master-server valid response selection", () => {
     vi.stubGlobal("fetch", vi.fn(async () => getResponse("example.com", port)));
     await expect(getGameServer("id", 12345)).rejects.toThrow(/address|port/i);
   });
+
+  it("parses an actual 22-column room list and posts the original password hash", async () => {
+    const columns = Array<string>(22).fill("");
+    columns[0] = "fallback-id"; columns[2] = "176"; columns[3] = "example.com"; columns[5] = "5123";
+    columns[6] = "true"; columns[7] = "host"; columns[8] = "true"; columns[15] = "2"; columns[16] = "10";
+    columns[18] = "audit-room"; columns[20] = "mods"; columns[21] = "12345";
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      if (!init.body) return new Response(`CORRODINGGAMES\ninvalid-row\n${columns.join(",")}\n`);
+      bodies.push(String(init.body)); return getResponse();
+    }));
+    const rooms = await listRooms(); expect(rooms).toHaveLength(1);
+    expect(rooms[0]).toMatchObject({ serverId: "audit-room", port: 5123, requiresPassword: true, currentPlayers: 2, modsRequired: "mods" });
+    await getGameServer("audit-room", 12345, "test-password");
+    expect(new URLSearchParams(bodies[0]).get("p_hash"))
+      .toBe("A1F76F81A058A63BECBD2EC1114F8213EEDEA326F4051583CA6D09337B176BF7");
+  });
 });

@@ -186,4 +186,64 @@ describe("session registration and input lifecycle", () => {
       .writeUTF("Welcome to the chatroom. Enter the verification token").toBuffer() });
     expect(conn.send).not.toHaveBeenCalled(); expect(requests).toHaveLength(1);
   });
+
+  it("accepts a callback answer once and supports an empty input string", async () => {
+    const { session, conn } = fixture({ onInputRequest: () => "" });
+    (session as any).handleFrame({ type: 117, payload: new ByteWriter().writeByte(0).writeInt(21).writeUTF("Custom input").toBuffer() });
+    const pending = session.pendingInputRequest;
+    await Promise.resolve();
+    expect(session.pendingInputRequest).toBeNull();
+    const r = new ByteReader(conn.send.mock.calls[0]![1]); r.readByte(); expect(r.readInt()).toBe(21); expect(r.readUTF()).toBe("");
+    pending?.respond("duplicate"); expect(conn.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards an async answer after a newer request replaces it", async () => {
+    const replies: Array<(text: string) => void> = [];
+    const { session, conn } = fixture({ onInputRequest: () => new Promise<string>((resolve) => replies.push(resolve)) });
+    for (const id of [1, 2]) (session as any).handleFrame({ type: 117,
+      payload: new ByteWriter().writeByte(0).writeInt(id).writeUTF("Custom input").toBuffer() });
+    replies[0]!("old"); await Promise.resolve(); expect(conn.send).not.toHaveBeenCalled();
+    replies[1]!("new"); await Promise.resolve();
+    const r = new ByteReader(conn.send.mock.calls[0]![1]); r.readByte(); expect(r.readInt()).toBe(2); expect(r.readUTF()).toBe("new");
+  });
+
+  it.each([() => { throw new Error("handler error"); }, () => Promise.reject(new Error("handler error"))])
+    ("terminates when an input callback fails", async (onInputRequest) => {
+      const { session } = fixture({ onInputRequest });
+      (session as any).handleFrame({ type: 117, payload: new ByteWriter().writeByte(0).writeInt(1).writeUTF("Custom input").toBuffer() });
+      await vi.waitFor(() => expect(session.state).toBe("disconnected"));
+      expect(session.pendingInputRequest).toBeNull();
+    });
+
+  it("expires unknown requests without leaving a hanging connection", () => {
+    vi.useFakeTimers();
+    const { session } = fixture({ inputTimeoutMs: 100 });
+    (session as any).handleFrame({ type: 117, payload: new ByteWriter().writeByte(0).writeInt(1).writeUTF("Custom input").toBuffer() });
+    vi.advanceTimersByTime(100); expect(session.state).toBe("disconnected"); expect(session.pendingInputRequest).toBeNull();
+  });
+
+  it("cancels requests and rejects input exceeding Java UTF limits", () => {
+    const first = fixture();
+    (first.session as any).handleFrame({ type: 117, payload: new ByteWriter().writeByte(0).writeInt(1).writeUTF("Custom input").toBuffer() });
+    first.session.pendingInputRequest?.respond(null); expect(first.session.state).toBe("disconnected");
+    const second = fixture();
+    (second.session as any).handleFrame({ type: 117, payload: new ByteWriter().writeByte(0).writeInt(1).writeUTF("Custom input").toBuffer() });
+    second.session.pendingInputRequest?.respond("x".repeat(65536)); expect(second.session.state).toBe("disconnected");
+  });
+
+  it.each([117, 151])("terminates a malformed system packet %i", (type) => {
+    const { session } = fixture(); (session as any).handleFrame({ type, payload: Buffer.alloc(0) });
+    expect(session.state).toBe("disconnected");
+  });
+
+  it("clears pending input when the room is missing or the server kicks", () => {
+    for (const type of [117, 150]) {
+      const { session } = fixture();
+      (session as any).handleFrame({ type: 117, payload: new ByteWriter().writeByte(0).writeInt(1).writeUTF("Custom input").toBuffer() });
+      (session as any).handleFrame({ type, payload: type === 117
+        ? new ByteWriter().writeByte(0).writeInt(2).writeUTF("GAME NOT FOUND").toBuffer()
+        : new ByteWriter().writeUTF("fixture kick").toBuffer() });
+      expect(session.state).toBe("kicked"); expect(session.pendingInputRequest).toBeNull();
+    }
+  });
 });

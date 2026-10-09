@@ -5,6 +5,8 @@ import { repeatHash } from "../src/protocol/hashes.ts";
 import { ByteReader, ByteWriter } from "../src/protocol/primitives.ts";
 import { parsePowChallenge, solvePowChallenge } from "../src/protocol/packets/pow.ts";
 import { parseRelayRedirect } from "../src/client/session.ts";
+import { integrityString } from "../src/protocol/integrity.ts";
+import { vi } from "vitest";
 
 // Wire rules: rw_analysis/02b-decompiled/.../j/ad.java and gameFramework/f.java.
 const upperHash = (text: string) => createHash("sha256").update(text).digest("hex").toUpperCase();
@@ -49,6 +51,11 @@ describe("vanilla 178 binary reconnect packet", () => {
 });
 
 describe("vanilla stateful 151 challenge", () => {
+  it("keeps the original integrity formula independent of RWX environment flags", () => {
+    vi.stubEnv("INTEGRITY_RWX_VARIANT", "1");
+    try { expect(integrityString(12345)).toContain("7:746163520"); }
+    finally { vi.unstubAllEnvs(); }
+  });
   it("uses initial challenge values 55 and 66 when fields are absent", () => {
     for (const [type, answer] of [[0, "55"], [1, "66"]] as const) {
       const payload = new ByteWriter().writeInt(1).writeInt(type).writeBoolean(false).writeBoolean(false).toBuffer();
@@ -86,5 +93,14 @@ describe("vanilla stateful 151 challenge", () => {
     expect(() => parse(new ByteWriter().writeInt(1).writeInt(5).writeBoolean(true)
       .writeInt(123).writeBoolean(false).toBuffer(), state)).toThrow();
     expect(state).toEqual({ minClientVersion: 55, minServerVersion: 66 });
+  });
+
+  it("handles bounded work, no matching solution, and string repetition", () => {
+    expect(solvePowChallenge({ id: 1, type: 5, minClientVersion: null, minServerVersion: null, maxIter: 10000001 })).toBe("max");
+    expect(solvePowChallenge({ id: 1, type: 5, minClientVersion: null, minServerVersion: null, targetHash: "impossible", maxIter: 0 })).toBe("-1");
+    const c = parsePowChallenge(new ByteWriter().writeInt(1).writeInt(7).writeBoolean(false).writeBoolean(false)
+      .writeUTF("ab").writeInt(3).toBuffer()); expect(solvePowChallenge(c)).toBe("ababab");
+    expect(solvePowChallenge({ ...c, repeatCount: 10001 })).toBe("max");
+    expect(solvePowChallenge({ ...c, repeatCount: -1 })).toBe("");
   });
 });
