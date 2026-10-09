@@ -1,0 +1,129 @@
+{
+  "full": {
+    "expected": [
+      {
+        "slot": 0,
+        "ping": -99,
+        "spectator": false
+      },
+      {
+        "slot": 1,
+        "ping": 42,
+        "spectator": true
+      },
+      {
+        "slot": 2,
+        "ping": -2,
+        "spectator": false,
+        "isAi": true
+      }
+    ],
+    "actual": [
+      {
+        "teamId": 0,
+        "slotId": 0,
+        "allyTeamId": 0,
+        "name": "host",
+        "isSpectator": false,
+        "connectionActive": false,
+        "pingMs": 2,
+        "isAi": false,
+        "hostFlag": 1,
+        "assignedColorIndex": 0
+      },
+      {
+        "teamId": 1,
+        "slotId": 1,
+        "allyTeamId": -3,
+        "name": "observer",
+        "isSpectator": false,
+        "connectionActive": false,
+        "pingMs": 2,
+        "isAi": false,
+        "hostFlag": 0,
+        "assignedColorIndex": 1
+      },
+      {
+        "teamId": 2,
+        "slotId": 2,
+        "allyTeamId": 1,
+        "name": "AI",
+        "isSpectator": true,
+        "connectionActive": false,
+        "pingMs": 3,
+        "isAi": true,
+        "hostFlag": 0,
+        "assignedColorIndex": 2
+      }
+    ]
+  },
+  "compact": {
+    "expectedExistingSlots": [
+      1
+    ],
+    "actual": [
+      {
+        "teamId": 0,
+        "slotId": 0,
+        "allyTeamId": null,
+        "name": null,
+        "isSpectator": false,
+        "connectionActive": false,
+        "pingMs": -1,
+        "isAi": false,
+        "hostFlag": null,
+        "assignedColorIndex": null
+      }
+    ],
+    "mergedSlots": [
+      0,
+      1,
+      2
+    ]
+  },
+  "settings": {
+    "expected": {
+      "sharedControl": true,
+      "gamePaused": true
+    },
+    "actual": {
+      "fogMode": 2,
+      "startingCredits": 4000,
+      "revealedMap": true,
+      "aiDifficulty": 2,
+      "currentUnitCap": 750,
+      "maxUnitCap": 1000,
+      "startingUnits": 1,
+      "incomeMultiplier": 1,
+      "noNukes": false
+    }
+  },
+  "connection": {
+    "silentHandshake": {
+      "observationMs": 200,
+      "beforeServerClose": {
+        "state": "awaiting-preregister",
+        "pingMs": null,
+        "sentHeartbeats": 0
+      },
+      "afterServerClose": {
+        "state": "disconnected",
+        "disconnected": 1,
+        "connections": 1
+      }
+    },
+    "joinedThenSilent": {
+      "observationMs": 200,
+      "beforeServerClose": {
+        "state": "battleroom",
+        "pingMs": null,
+        "sentHeartbeats": 7
+      },
+      "afterServerClose": {
+        "state": "disconnected",
+        "disconnected": 1,
+        "connections": 1
+      }
+    }
+  }
+}
