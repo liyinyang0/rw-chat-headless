@@ -98,7 +98,7 @@ declare interface Session {
 
 /** 中继会通过 117 提示明确告知房间不存在；此时重发房间码只会形成无效循环。 */
 export function isRoomUnavailablePrompt(prompt: string): boolean {
-  return /(?:房间\s*ID.*(?:不存在|已关闭)|找不到这个服务器|房间号.*不存在|game\s+not\s+found)/i.test(prompt);
+  return /(?:房间\s*ID.*(?:不存在|已关闭)|房间\s*(?:不存在|已关闭)|找不到这个服务器|房间号.*不存在|game\s+not\s+found)/i.test(prompt);
 }
 
 export interface RelayRedirect {
