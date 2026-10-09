@@ -1,8 +1,8 @@
-# rw-chat-headless — 仅聊天的无头 Rusted Warfare 战役室客户端
+# rw-chat-headless — 仅聊天的无头 Rusted Warfare 客户端
 
 [中文](README.md) | [English](README.en.md) | [Русский](README.ru.md)
 
-以玩家身份进入**任意** Rusted Warfare 服务器（公开列表 / 房间代码 / IP 直连），停留在战役室收发聊天。
+以玩家身份进入**任意** Rusted Warfare 服务器（公开列表 / 房间代码 / IP 直连），停留在战役室准备阶段甚至游戏阶段收发聊天。
 **仅聊天**：不当房主、不参与对局操作，纯"挂房间里说话/收消息"的无头实例。
 纯 TypeScript / Node 22 协议实现：无游戏引擎、无 UI、无图形依赖，单实例内存 ~40MB。
 
@@ -53,7 +53,7 @@ npx tsx src/cli.ts join-multi list:0 list:2 list:5   # 也可逗号分隔
 - 每房最近 200 条聊天保留在内存（`handle.history()`）
 - 内存量级：进程基线 ~70MB，每多一房约 +1MB（游戏流被丢弃，内存不随战斗流量涨）
 
-## 编程接入（自己接机器人）
+## 编程接入（自己接agent）
 
 CLI 之外，`Session` 是可直接使用的库。聊天进来了是 `chat` 事件，说话用 `sendChat()`——
 接 LLM、规则引擎、消息桥，都从这个口子进：
