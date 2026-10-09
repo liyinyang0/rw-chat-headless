@@ -1,0 +1,77 @@
+{
+  "time": "2026-10-09T11:57:46.689Z",
+  "result": "joined and two-client echo verified",
+  "logs": [
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] connected, sending hello",
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] got 161: serverVersion=176 uuid=1d58bb55… seed=562487 salt=8027622",
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] sent 110 register (format=5)",
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] in battleroom: 0 active players",
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] room info: map=[p8]Many Islands (8p).tmx mods=yes(skipped)",
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] connected, sending hello",
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] room info: map=[p8]Many Islands (8p).tmx mods=yes(skipped)",
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] got 161: serverVersion=176 uuid=1d58bb55… seed=773370 salt=8027622",
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] sent 110 register (format=5)",
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] in battleroom: 0 active players",
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] room info: map=[p8]Many Islands (8p).tmx mods=yes(skipped)",
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] ping 233ms",
+    "[u_01b660f3-8978-4b2a-8eb4-e04578c7657b → 18.216.139.119:5126] ping 221ms"
+  ],
+  "target": "get|u_01b660f3-8978-4b2a-8eb4-e04578c7657b|12734|false|5126",
+  "listRoom": {
+    "createdBy": "SERVER",
+    "map": "Auto Server 2+ [US-F #3]"
+  },
+  "echo": {
+    "message": "state-check-mv0wv9bs",
+    "senderName": "rw-state-B"
+  },
+  "roster": [
+    {
+      "teamId": 0,
+      "slotId": 0,
+      "allyTeamId": 0,
+      "name": "rw-state-A",
+      "isSpectator": false,
+      "connectionActive": true,
+      "pingMs": 222,
+      "isAi": false,
+      "aiDifficulty": 0,
+      "sharedControlManual": false,
+      "sharedControlAutomatic": false,
+      "isHost": false,
+      "hostFlag": 0,
+      "assignedColorIndex": 0
+    },
+    {
+      "teamId": 1,
+      "slotId": 1,
+      "allyTeamId": 1,
+      "name": "rw-state-B",
+      "isSpectator": false,
+      "connectionActive": true,
+      "pingMs": 219,
+      "isAi": false,
+      "aiDifficulty": 0,
+      "sharedControlManual": false,
+      "sharedControlAutomatic": false,
+      "isHost": false,
+      "hostFlag": 0,
+      "assignedColorIndex": 1
+    }
+  ],
+  "settings": {
+    "fogMode": 2,
+    "startingCredits": 0,
+    "revealedMap": true,
+    "aiDifficulty": 1,
+    "currentUnitCap": 250,
+    "maxUnitCap": 250,
+    "startingUnits": 1,
+    "incomeMultiplier": 1,
+    "noNukes": false,
+    "sharedControl": false,
+    "gamePaused": false
+  },
+  "phase": "lobby",
+  "recentHumans": 2
+}

@@ -12,7 +12,7 @@
     "build": "tsc --noEmit",
     "start": "tsx src/cli.ts",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage --coverage.include=src/masterserver/** --coverage.include=src/protocol/hashes.ts --coverage.include=src/protocol/integrity.ts --coverage.include=src/protocol/packets/common.ts --coverage.include=src/protocol/packets/pow.ts --coverage.include=src/client/session.ts"
+    "test:coverage": "vitest run --coverage --coverage.include=src/masterserver/** --coverage.include=src/protocol/hashes.ts --coverage.include=src/protocol/integrity.ts --coverage.include=src/protocol/packets/common.ts --coverage.include=src/protocol/packets/pow.ts --coverage.include=src/protocol/packets/room.ts --coverage.include=src/client/session.ts --coverage.include=src/client/connection.ts --coverage.include=src/client/reconnecting.ts --coverage.include=src/client/multi.ts"
   },
   "dependencies": {
     "tsx": "^4.19.0",

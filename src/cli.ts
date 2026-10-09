@@ -9,7 +9,8 @@
  *
  * target 支持：房间代码（rkzxxxx）/ host:port / get|id|code|pwd|port / 列表序号（list:3）
  * 环境变量：NAME（玩家名，默认 rw-chat-headless）、PASSWORD、LANGUAGE、REGISTER_FORMAT、
- *           CLIENT_UUID、UNITS_CHECKSUM、RELAY_ROOM_ID、RW_SOCKS_PROXY、DEBUG
+ *           CLIENT_UUID、UNITS_CHECKSUM、RELAY_ROOM_ID、RW_SOCKS_PROXY、DEBUG、
+ *           JOIN_TIMEOUT_MS、RECEIVE_TIMEOUT_MS、AUTO_RECONNECT、RECONNECT_*。
  */
 import { createInterface } from "node:readline";
 import { listRooms, roomConnectDescriptor } from "./masterserver/client.ts";
@@ -269,7 +270,9 @@ target:
 join-multi 额外环境变量: MULTI_NAME(suffix|same) MULTI_STAGGER_MS MULTI_LIFETIME_MS
   stdin 命令: /rooms /say <序号> <文本> /sayall <文本> /quit
 
-环境变量: NAME PASSWORD LANGUAGE REGISTER_FORMAT CLIENT_UUID UNITS_CHECKSUM RELAY_ROOM_ID RW_SOCKS_PROXY DEBUG`);
+环境变量: NAME PASSWORD LANGUAGE REGISTER_FORMAT CLIENT_UUID UNITS_CHECKSUM RELAY_ROOM_ID RW_SOCKS_PROXY DEBUG
+连接检测: JOIN_TIMEOUT_MS(45000) RECEIVE_TIMEOUT_MS(60000)，0 禁用
+可选重连: AUTO_RECONNECT=1 RECONNECT_MAX_RETRIES(10) RECONNECT_BASE_MS(5000) RECONNECT_MAX_MS(60000)`);
   process.exit(1);
 }
 

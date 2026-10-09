@@ -1,0 +1,20 @@
+{
+  "time": "2026-10-09T11:38:42.885Z",
+  "target": "rkc595",
+  "roster": [],
+  "settings": {},
+  "result": "unavailable",
+  "logs": [
+    "[r.relay.corrodinggames.com/rkc595] connected, sending hello",
+    "[r.relay.corrodinggames.com/rkc595] got 161: serverVersion=0 uuid=RELAY-CN… seed=-1337234286 salt=null",
+    "[r.relay.corrodinggames.com/rkc595] sent 110 register (format=5)",
+    "[r.relay.corrodinggames.com/rkc595] pow challenge type=0 id=1791545922",
+    "[c.relay.cnkd.fun:5123/kc595] relay redirect #1",
+    "[c.relay.cnkd.fun:5123/kc595] connected, sending hello",
+    "[c.relay.cnkd.fun:5123/kc595] got 161: serverVersion=0 uuid=RCN Team… seed=-1337234288 salt=null",
+    "[c.relay.cnkd.fun:5123/kc595] sent 110 register (format=5)",
+    "[c.relay.cnkd.fun:5123/kc595] pow challenge type=3 id=1791545922",
+    "[c.relay.cnkd.fun:5123/kc595] got 117 request (id=5): \"CNKD团队提示：你输入的房号是K595 房间不存在 输入new建立一个房间 或加入官方群寻求帮助 官方群聊1030157691 分享你的房号或加入联机\""
+  ],
+  "error": "Error: join timeout"
+}

@@ -60,14 +60,17 @@ i32 yourTeamId, bool fullUpdate, i32 count(10),
 block "teams" (gzip):
   count × { bool exists, i32 type(0玩家/1AI),
     [fullUpdate? 精简 : 完整状态] }
-完整状态: byte teamId, i32 credits, i32 colorId, nullable UTF name, bool observer,
-  i32 netId, i64 lastPing, bool spectator, i32 ping, i32 sortIdx, byte 0,
-  bool connActive, bool netActive, bool victory, bool surrender, i32 surrenderMs,
+完整状态: byte teamId, i32 credits, i32 allianceId, nullable UTF name, bool U,
+  i32 ping, i64 lastPing, bool AI, i32 aiDifficulty, i32 sortIdx, byte 0,
+  bool sharedControlManual, bool sharedControlAutomatic, bool victory, bool surrender, i32 surrenderMs,
   nullable UTF aiHint, i32 hostFlag, 4×nullable i32, i32 assignedColor
+精简状态: byte 0, i32 ping, bool sharedControlManual, bool sharedControlAutomatic
 块外: i32 fog, i32 credits, bool revealed, i32 aiDiff, byte ver(5),
   i32 unitCap, i32 maxUnitCap, i32 startUnits, f32 income, bool noNukes, bool j,
   bool hasCustomUnits(→跳块), bool sharedControl, bool gamePaused
 ```
+
+精简模式也逐槽位发送存在性；槽位来自循环下标，不是保留字节。不存在的槽位从旧名册删除，仅继承仍存在玩家未传的名字等字段。观战为 allianceId==-3；ping=-99 表示 HOST、-1 过期、-2 未知；共享控制 bool 不表示在线。原版 hostFlag==1 为房主，社区节点可能自行编码，保留原值供核对。字段版本分支和静态证据见 [名册研究](ROSTER-STATE-AUDIT.md)。
 
 ## 7. 保活与状态
 
@@ -76,6 +79,12 @@ C→S 108: i64 时间戳ms, byte 0        （每 ~2s；服务器 readTimeout 15s
 S→C 108: 同上 → 客户端回 109: i64 回显, byte 1, byte fps(≤130)
 C→S 112: bool 未加载, bool isLoading （进房后发 false,false 报告已加载）
 ```
+
+120 开局载荷：`byte 0, i32 mapType(0=skirmish,1=custom,2=save), [custom/save: i32 length + blob], UTF mapPath, [bool lateJoin]`。客户端只记录类型、路径和数据长度，跳过地图/存档内容，回 112(00 01)。精简 115 也可提示已在游戏中；完整 115 不保证处于大厅。
+
+116 为 `i32 + bool serverEnded`，true 记录服务端结束并通知一次；122 则切回大厅，同一轮不重复发 gameEnded。115 设置 v4/v5 分别提供共享控制/暂停；旧版本未提供时保持已有值，暂停独立于大厅/游戏阶段。
+
+Session 默认 45 秒入房总预算，含重定向、每次重新 start 重新计时；输入等待暂停预算，使用独立输入超时。入房后按完整帧接收活动检测失联，默认 60 秒。不能强制等待 109：原版服务器主动发 108，客户端回 109；无聊天不等于失联。超时会断开并清理定时器。自动重试由可选 ReconnectingSession 或外部 Worker 单独管理，见 [修复说明](ROSTER-STATE-FIX.md)。
 
 ## 8. 密码与踢出
 

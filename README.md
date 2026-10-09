@@ -17,6 +17,8 @@
 - ✅ mod 房直接进（服务器推送的 customUnits 块直接跳过，无需装 mod）
 - ✅ 密码房（`PASSWORD`）、Rukkit / RW-HPS / 官方 relay（PoW 自动应答）
 - ✅ 战役室聊天收发（141 收 / 140 发）、玩家名册（115）
+- ✅ 名册槽位删除、观战/AI、ping、共享控制；房间暂停、开局地图与结束通知
+- ✅ 入房截止时间与接收失联检测；独立 CLI / 多房可选退避重连
 - ✅ 单进程多房间（每房一条连接，独立会话与聊天记录）
 - ✅ 176 核心单位校验和已内置（678359601，从真实客户端抓取）
 - ❌ 不当房主、不参与对局操作；开局(120)时回 112 报"已进入对局"，不阻塞全房开局，留在房里保持聊天
@@ -26,6 +28,7 @@
 > g() 公式 `7:` 字段统一使用原版乘法；h() 为 `#%06X` 格式。
 > 入房实现按 TCP / 176 协议统一处理代码、列表描述符、地址和中继跳转，不按服务器品牌切换。
 > 2026-10-09 已验证公开列表房间和用户房间 `rkc595` 的双客户端聊天回显；UDP、其他版本和所有社区扩展尚未全面验证。改动与证据见 [统一入房说明](docs/VANILLA-ROOM-JOIN.md)。
+> 后续名册、状态和失联修复见 [修复说明](docs/ROSTER-STATE-FIX.md)。
 
 ## 快速开始
 
@@ -77,7 +80,7 @@ session.on("stateChange", (s) => console.log("state:", s));
 await session.start();
 ```
 
-`session.roster` 是当前名册（含 AI / 掉线 / 观战标记），`session.info.serverUuid` 是服务器下发的身份字段；共享中继可能在多个房间复用，不能单独用它确认目标房间。
+`session.roster` 是当前名册（含 AI / 观战 / ping / 共享控制）。`connectionActive` 从服务端 ping 派生“最近在线”，不代表实时 TCP 状态。`session.info.serverUuid` 是服务器下发的身份字段；共享中继可能在多个房间复用，不能单独用它确认目标房间。
 多房间编排用 `runMultiRooms()`（见 `src/client/multi.ts`），每房一个 handle。
 
 服务器要求密码或其他输入时，可监听 `inputRequest`，再调用 `request.respond(answer)`；`null` 取消连接。也可在 `SessionOptions.onInputRequest` 中返回应答。单房 CLI 将下一行作为应答；无法判断含义的 117 提示会等待输入，默认 60 秒超时。公开列表密码房在地址解析前需要 `PASSWORD`。
@@ -96,7 +99,11 @@ UNITS_CHECKSUM=NNNN npx tsx src/cli.ts join <target>
 ## 环境变量
 
 见 [.env.example](.env.example)：`NAME` / `PASSWORD` / `LANGUAGE` / `REGISTER_FORMAT` /
-`UNITS_CHECKSUM` / `RELAY_ROOM_ID` / `CLIENT_UUID` / `RW_SOCKS_PROXY` / `DEBUG`。
+`UNITS_CHECKSUM` / `RELAY_ROOM_ID` / `CLIENT_UUID` / `RW_SOCKS_PROXY` / `DEBUG`，以及连接与重连参数。
+
+默认入房预算 45 秒（包含中继跳转），入房后 60 秒没有完整协议帧则断开；分别通过 `JOIN_TIMEOUT_MS`、`RECEIVE_TIMEOUT_MS` 调整，0 禁用。聊天安静、没有收到客户端 108 的 109 回包都不单独判为失联。
+
+独立 CLI / 多房模式设置 `AUTO_RECONNECT=1` 开启重连。默认最多重试 10 次，按 5/10/20/40/60 秒退避并抖动，每次从原始房间代码重新解析，沿用身份和代理；被踢、房间不存在、主动退出停止。库使用 `ReconnectingSession` 明确启用；已有外部 Worker 负责重试时继续使用 `Session`。详情及事件接口见 [修复说明](docs/ROSTER-STATE-FIX.md)。
 
 ## 客户端身份（每部署一份，默认持久）
 

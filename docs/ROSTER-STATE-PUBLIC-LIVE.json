@@ -1,0 +1,12 @@
+{
+  "time": "2026-10-09T11:57:04.649Z",
+  "target": "get|u_8e35a873-6ebb-435e-bad1-14aa8e1ce8b3|37293|false|5127",
+  "result": "failed",
+  "logs": [
+    "[u_8e35a873-6ebb-435e-bad1-14aa8e1ce8b3 → 54.215.144.145:5127] connected, sending hello",
+    "[u_8e35a873-6ebb-435e-bad1-14aa8e1ce8b3 → 54.215.144.145:5127] got 161: serverVersion=176 uuid=9b40ec29… seed=684032 salt=8595670",
+    "[u_8e35a873-6ebb-435e-bad1-14aa8e1ce8b3 → 54.215.144.145:5127] sent 110 register (format=5)",
+    "[u_8e35a873-6ebb-435e-bad1-14aa8e1ce8b3 → 54.215.144.145:5127] kicked: A game as already been started on this server"
+  ],
+  "error": "Error: A game as already been started on this server"
+}
