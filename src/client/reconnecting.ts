@@ -38,7 +38,7 @@ export interface ReconnectSessionSource {
 }
 
 export function reconnectDelay(attempt: number, base = 5000, cap = 60000, random = Math.random): number {
-  return Math.round(Math.min(cap, base * 2 ** Math.min(attempt, 30)) * (0.9 + random() * 0.2));
+  return Math.min(cap, Math.round(Math.min(cap, base * 2 ** Math.min(attempt, 30)) * (0.9 + random() * 0.2)));
 }
 
 function terminalReason(reason: string): boolean {
@@ -67,7 +67,7 @@ class ReconnectingSession extends EventEmitter {
   ) {
     super();
     for (const value of [retry.maxRetries ?? 10, retry.baseDelayMs ?? 5000, retry.maxDelayMs ?? 60000]) {
-      if (!Number.isFinite(value) || value < 0) throw new Error("invalid reconnect configuration");
+      if (!Number.isSafeInteger(value) || value < 0) throw new Error("invalid reconnect configuration");
     }
     this.options = { ...options, clientUuid: options.clientUuid ?? persistentClientUuid() };
   }

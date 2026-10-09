@@ -118,9 +118,11 @@ async function runSession(target: string): Promise<void> {
 
   // stdin 聊天
   const rl = createInterface({ input: process.stdin });
+  let userStopped = false;
   rl.on("line", (line) => {
     const text = line.trim();
     if (text === "/quit" || text === "/exit") {
+      userStopped = true;
       session.disconnect("bye");
       setTimeout(() => process.exit(0), 300);
       return;
@@ -136,12 +138,14 @@ async function runSession(target: string): Promise<void> {
   let startupFailed = false;
   rl.on("close", () => {
     if (startupFailed) return;
+    userStopped = true;
     session.disconnect("stdin closed");
     setTimeout(() => process.exit(0), 300);
   });
   try {
     await session.start();
   } catch (error) {
+    if (userStopped) return;
     startupFailed = true;
     rl.close();
     throw error;

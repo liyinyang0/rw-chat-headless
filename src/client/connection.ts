@@ -96,7 +96,12 @@ export class RwConnection extends EventEmitter {
   }
 
   connect(): Promise<void> {
+    if (this.closed) return Promise.reject(new Error("connection already closed"));
     return new Promise((resolve, reject) => {
+      const onClose = (reason: string) => fail(new Error(reason));
+      const fail = (error: Error) => { this.off("close", onClose); reject(error); };
+      const connected = () => { this.off("close", onClose); resolve(); };
+      this.once("close", onClose);
       const socket = new Socket();
       socket.setNoDelay(true);
       socket.setTimeout(this.opts.connectTimeoutMs ?? 7000);
@@ -106,6 +111,7 @@ export class RwConnection extends EventEmitter {
             if (this.opts.socksProxy) {
               await connectViaSocks5(socket, { host: this.opts.host, port: this.opts.port });
             }
+            if (this.closed) return;
             socket.setTimeout(0);
             socket.on("data", (chunk: Buffer) => {
               let frames: Frame[];
@@ -118,20 +124,20 @@ export class RwConnection extends EventEmitter {
               for (const f of frames) this.emit("frame", f);
             });
             socket.resume();
-            resolve();
+            connected();
           } catch (error) {
             socket.destroy();
-            reject(error instanceof Error ? error : new Error(String(error)));
+            fail(error instanceof Error ? error : new Error(String(error)));
           }
         })();
       });
       socket.once("timeout", () => {
         socket.destroy();
-        reject(new Error(`connect timeout: ${this.remoteLabel}`));
+        fail(new Error(`connect timeout: ${this.remoteLabel}`));
       });
       socket.once("error", (err) => {
         if (this.closed) return;
-        reject(new Error(`connect failed: ${this.remoteLabel}: ${err.message}`));
+        fail(new Error(`connect failed: ${this.remoteLabel}: ${err.message}`));
       });
       socket.once("close", () => {
         if (!this.closed) {
