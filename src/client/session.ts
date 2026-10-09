@@ -24,7 +24,7 @@ import {
   type PreregisterInfo,
 } from "../protocol/packets/common.ts";
 import { parsePowChallenge, buildPowResponse, solvePowChallenge, createPowState } from "../protocol/packets/pow.ts";
-import { parseServerInfo, parseTeamList, type RoomSettingsLite, type ServerInfoLite, type TeamEntry } from "../protocol/packets/room.ts";
+import { parseGameStart, parseServerInfo, parseTeamList, type GameStartInfo, type RoomSettingsLite, type ServerInfoLite, type TeamEntry } from "../protocol/packets/room.ts";
 import { integrityString } from "../protocol/integrity.ts";
 
 export type SessionState =
@@ -43,6 +43,8 @@ export interface SessionEvents {
   stateChange: SessionState;
   rosterChange: TeamEntry[];
   roomInfo: ServerInfoLite;
+  settingsChange: RoomSettingsLite;
+  gameStart: GameStartInfo;
   phaseChange: GamePhase;
   gameEnded: undefined;
   kicked: string;
@@ -129,6 +131,9 @@ class Session extends EventEmitter {
   yourTeamId = -1;
   settings: RoomSettingsLite = {};
   phase: GamePhase = "lobby";
+  gameStartInfo: GameStartInfo | null = null;
+  serverEnded = false;
+  private gameEndedNotified = false;
   /** 最近一次客户端心跳 RTT；不可用时为 null。 */
   pingMs: number | null = null;
   /** 最近一次 115 携带的槽位数；未经抓包验证不等同人数上限。 */
@@ -194,6 +199,9 @@ class Session extends EventEmitter {
     this.settings = {};
     this.slotCount = null;
     this.phase = "lobby";
+    this.gameStartInfo = null;
+    this.serverEnded = false;
+    this.gameEndedNotified = false;
     this.pingMs = null;
     this.last117Key = "";
     this.redirecting = false;
@@ -281,6 +289,8 @@ class Session extends EventEmitter {
         return; // 服务器不会给客户端发 110
       case PacketType.TEAM_LIST:
         return this.onTeamList(frame.payload);
+      case 116:
+        return this.onServerGameEnd(frame.payload);
       case PacketType.SERVER_COMMAND:
         return; // 4：调试包
       case PacketType.CHAT_RECEIVE:
@@ -301,7 +311,7 @@ class Session extends EventEmitter {
         // 106 等剩余握手/系统包
         if (frame.type === 106) return this.onServerInfo(frame.payload);
         // 120 开局 / 122 回房：回 112 报"已加载"，否则服务器会 "Still waiting on" 卡全房
-        if (frame.type === 120) return this.onGameStart();
+        if (frame.type === 120) return this.onGameStart(frame.payload);
         if (frame.type === 122) return this.onReturnToLobby();
         // 30 帧数据等其余游戏包：无头客户端忽略
         return;
@@ -441,6 +451,12 @@ class Session extends EventEmitter {
       this.yourTeamId = result.yourTeamId;
       this.settings = { ...this.settings, ...result.settings };
       this.slotCount = result.slotCount;
+      if (result.delta && this.phase !== "in_game") {
+        this.phase = "in_game";
+        this.gameEndedNotified = false;
+        this.serverEnded = false;
+        this.emit("phaseChange", this.phase);
+      }
       if (!this.joinedOnce) {
         this.joinedOnce = true;
         this.setState("battleroom");
@@ -450,6 +466,7 @@ class Session extends EventEmitter {
         this.startHeartbeat();
       }
       this.emit("rosterChange", this.roster);
+      this.emit("settingsChange", { ...this.settings });
     } catch (err) {
       this.log(`team list parse failed (non-fatal): ${err instanceof Error ? err.message : err}`);
     }
@@ -458,6 +475,13 @@ class Session extends EventEmitter {
   private onServerInfo(payload: Buffer) {
     try {
       this.roomInfo = parseServerInfo(payload);
+      const settings: RoomSettingsLite = { ...this.settings };
+      for (const key of ["fogMode", "startingCredits", "revealedMap", "aiDifficulty", "currentUnitCap", "maxUnitCap", "startingUnits", "incomeMultiplier", "noNukes", "sharedControl"] as const) {
+        const value = this.roomInfo[key];
+        if (value != null) Object.assign(settings, { [key]: value });
+      }
+      this.settings = settings;
+      this.emit("settingsChange", { ...settings });
       this.emit("roomInfo", this.roomInfo);
       this.log(
         `room info: map=${this.roomInfo.mapPath ?? "?"} mods=${this.roomInfo.hasCustomUnits ? "yes(skipped)" : "no"}`,
@@ -468,13 +492,24 @@ class Session extends EventEmitter {
   }
 
   /** 120 开局：默认回 112 报"已加载"不阻塞全房；onGameStart=leave 时开局即退出。 */
-  private onGameStart() {
+  private onGameStart(payload?: Buffer) {
+    if (payload !== undefined) {
+      try {
+        this.gameStartInfo = parseGameStart(payload);
+      } catch {
+        this.disconnect("invalid game start packet");
+        return;
+      }
+    }
     if (this.opts.onGameStart === "leave") {
       this.log(`game start (type=120) → onGameStart=leave，主动退出`);
       this.disconnect("game start (packet 120)");
       return;
     }
     this.phase = "in_game";
+    this.serverEnded = false;
+    this.gameEndedNotified = false;
+    if (this.gameStartInfo) this.emit("gameStart", this.gameStartInfo);
     this.emit("phaseChange", this.phase);
     this.conn?.send(PacketType.CLIENT_STATUS, buildGameStartedStatus());
     this.log(`game start (type=120) → 已回 112(00 01) 报进入对局（不阻塞开局）`);
@@ -487,7 +522,21 @@ class Session extends EventEmitter {
     this.emit("phaseChange", this.phase);
     this.conn?.send(PacketType.CLIENT_STATUS, buildGameStartedStatus());
     this.log(`return to lobby (type=122) → 已回 112(00 01)`);
-    if (ended) this.emit("gameEnded", undefined);
+    if (ended) this.notifyGameEnded();
+  }
+
+  private onServerGameEnd(payload: Buffer): void {
+    try {
+      const r = new ByteReader(payload);
+      r.readInt();
+      if (r.readBoolean()) { this.serverEnded = true; this.notifyGameEnded(); }
+    } catch { this.disconnect("invalid game end packet"); }
+  }
+
+  private notifyGameEnded(): void {
+    if (this.gameEndedNotified) return;
+    this.gameEndedNotified = true;
+    this.emit("gameEnded", undefined);
   }
 
   private onChatReceive(payload: Buffer) {
@@ -619,16 +668,18 @@ class Session extends EventEmitter {
 }
 export { Session };
 
-/** 精简 115 只覆盖网络状态；名字、阵营、观战和房主原始标志沿用完整名单。 */
+/** 精简 115 仍提供全部槽位存在性；只继承本包存在玩家的未传字段。 */
 export function mergeRosterDelta(current: TeamEntry[], delta: TeamEntry[]): TeamEntry[] {
   const bySlot = new Map(current.map((entry) => [entry.slotId, entry]));
-  for (const update of delta) {
+  return delta.map((update) => {
     const previous = bySlot.get(update.slotId);
-    bySlot.set(update.slotId, previous ? {
+    return previous ? {
       ...previous,
       connectionActive: update.connectionActive,
+      pingMs: update.pingMs,
       isAi: update.isAi,
-    } : update);
-  }
-  return [...bySlot.values()].sort((a, b) => a.slotId - b.slotId);
+      sharedControlManual: update.sharedControlManual,
+      sharedControlAutomatic: update.sharedControlAutomatic,
+    } : update;
+  }).sort((a, b) => a.slotId - b.slotId);
 }

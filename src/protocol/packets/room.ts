@@ -10,12 +10,16 @@ export interface TeamEntry {
   /** 玩家名（队伍名）。 */
   name: string | null;
   isSpectator: boolean;
-  /** 连接是否在线（掉线重连窗口内为 false）。 */
+  /** 从服务端 ping 派生的最近在线状态，不等同于实时 TCP 状态。 */
   connectionActive: boolean;
   pingMs: number;
   /** AI 队伍。 */
   isAi: boolean;
-  /** 原始 hostTeamFlag；语义需真实抓包确认后才可作为房主标识展示。 */
+  aiDifficulty?: number | null;
+  sharedControlManual?: boolean;
+  sharedControlAutomatic?: boolean;
+  isHost?: boolean;
+  /** 原版 Q==1 表示房主；保留原值供社区协议核对。 */
   hostFlag: number | null;
   /** 玩家覆盖色/最终分配色，旧服务端不可用时为 null。 */
   assignedColorIndex: number | null;
@@ -24,7 +28,7 @@ export interface TeamEntry {
 export interface TeamListResult {
   yourTeamId: number;
   teams: TeamEntry[];
-  /** true 表示只含网络在线状态的精简增量，必须与上一次完整名单合并。 */
+  /** true 表示记录字段精简；所有槽位的存在性仍是完整快照。 */
   delta: boolean;
   /** 协议发送的槽位数；在真实包验证前不得直接宣传为人数上限。 */
   slotCount: number;
@@ -42,6 +46,8 @@ export interface RoomSettingsLite {
   startingUnits?: number;
   incomeMultiplier?: number;
   noNukes?: boolean;
+  sharedControl?: boolean;
+  gamePaused?: boolean;
 }
 
 /**
@@ -62,6 +68,7 @@ export function parseTeamList(payload: Buffer, streamVersion: number): TeamListR
   if (streamVersion >= 90) {
     count = r.readInt();
   }
+  if (count < 0 || count > 256) throw new Error("invalid team slot count");
 
   const teams: TeamEntry[] = [];
   if (streamVersion >= 90) {
@@ -72,19 +79,21 @@ export function parseTeamList(payload: Buffer, streamVersion: number): TeamListR
       if (!inner.readBoolean()) continue;
       const isAi = inner.readInt() !== 0;
       if (fullUpdate) {
-        // writeNetworkTeamUpdate：byte + teamNetworkId + connActive + netActive
-        const teamId = inner.readByte();
-        inner.readInt();
-        const connectionActive = inner.readBoolean();
-        inner.readBoolean();
+        // n.c(as)：保留字节 + ping + 手动共享控制 + 自动共享控制。
+        inner.readByte();
+        const pingMs = inner.readInt();
+        const sharedControlManual = inner.readBoolean();
+        const sharedControlAutomatic = inner.readBoolean();
         teams.push({
-          teamId,
-          slotId: teamId,
+          teamId: i,
+          slotId: i,
           allyTeamId: null,
           name: null,
           isSpectator: false,
-          connectionActive,
-          pingMs: -1,
+          connectionActive: pingIsRecent(pingMs),
+          pingMs,
+          sharedControlManual,
+          sharedControlAutomatic,
           isAi,
           hostFlag: null,
           assignedColorIndex: null,
@@ -119,7 +128,8 @@ export function parseTeamList(payload: Buffer, streamVersion: number): TeamListR
     if (settingsVersion >= 3 && r.readBoolean()) {
       skipBlock(r); // customUnits：不做校验，直接跳过（mod 房零成本进入的关键）
     }
-    // 剩余 sharedControl/gamePaused 等不再消费
+    if (settingsVersion >= 4) settings.sharedControl = r.readBoolean();
+    if (settingsVersion >= 5) settings.gamePaused = r.readBoolean();
   } catch {
     // 设置段解析失败不影响名册
   }
@@ -133,26 +143,23 @@ function readBasicTeamState(r: ByteReader, sv: number, isAi: boolean): TeamEntry
   r.readInt(); // credits
   const allyTeamId = r.readInt();
   const name = r.readNullableString();
-  r.readBoolean(); // isTeamObserver
-  let pingMs = -1;
-  let isSpectator = false;
-  let connectionActive = true;
+  r.readBoolean(); // U，原始玩家状态字段
+  let pingMs = -2;
+  let aiDifficulty: number | null = null;
   if (sv > 26) {
-    r.readInt(); // teamNetworkId
+    pingMs = r.readInt(); // n.A()：ping / -99 HOST / -1 过期 / -2 未知
     r.readLong(); // teamLastPingTime
   }
   if (sv >= 55) {
-    isSpectator = r.readBoolean();
-    pingMs = r.readInt();
+    r.readBoolean(); // AI 标志，外层 type 已提供 isAi
+    aiDifficulty = r.readInt();
   }
   if (sv >= 91) {
     r.readInt(); // teamSortIndex
     r.readByte(); // 保留
   }
-  if (sv >= 97) {
-    connectionActive = r.readBoolean();
-    r.readBoolean(); // isTeamNetworkActive
-  }
+  const sharedControlManual = sv >= 97 ? r.readBoolean() : false;
+  const sharedControlAutomatic = sv >= 97 ? r.readBoolean() : false;
   if (sv >= 125) {
     r.readBoolean(); // isTeamVictory
     r.readBoolean(); // teamSurrenderTriggered
@@ -176,13 +183,42 @@ function readBasicTeamState(r: ByteReader, sv: number, isAi: boolean): TeamEntry
     slotId: teamId,
     allyTeamId,
     name,
-    isSpectator,
-    connectionActive,
+    isSpectator: allyTeamId === -3,
+    connectionActive: pingIsRecent(pingMs),
     pingMs,
     isAi,
+    aiDifficulty,
+    sharedControlManual,
+    sharedControlAutomatic,
+    isHost: hostFlag === 1,
     hostFlag,
     assignedColorIndex,
   };
+}
+
+function pingIsRecent(ping: number): boolean {
+  return ping >= 0 || ping === -99;
+}
+
+export interface GameStartInfo {
+  mapType: "skirmish" | "custom" | "save";
+  mapPath: string;
+  mapDataBytes: number;
+  lateJoin?: boolean;
+}
+
+/** 120：跳过地图/存档大块，只保留启动元数据。 */
+export function parseGameStart(payload: Buffer): GameStartInfo {
+  const r = new ByteReader(payload);
+  r.readByte();
+  const ordinal = r.readInt();
+  if (ordinal < 0 || ordinal > 2) throw new Error("invalid start map type");
+  let mapDataBytes = 0;
+  if (ordinal !== 0) { mapDataBytes = r.readInt(); r.skip(mapDataBytes); }
+  const mapPath = r.readUTF();
+  // 原版写侧还有 lateJoin；允许旧节点省略这个尾字段。
+  const lateJoin = r.remaining > 0 ? r.readBoolean() : undefined;
+  return { mapType: (["skirmish", "custom", "save"] as const)[ordinal]!, mapPath, mapDataBytes, lateJoin };
 }
 
 export interface ServerInfoLite {
